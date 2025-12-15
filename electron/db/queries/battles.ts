@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import { getDb } from "../index";
 
 export type BattleRow = {
   id: string;
@@ -7,14 +7,17 @@ export type BattleRow = {
   result: string | null;
 };
 
-export function insertBattle(args: {
+export type InsertBattleArgs = {
   id: string;
   played_at: string; // ISO string
   format?: string;
   result?: string;
   raw_log?: string;
-}) {
+};
+
+export function insertBattle(args: InsertBattleArgs) {
   const db = getDb();
+
   const stmt = db.prepare(`
     INSERT INTO battles (id, played_at, format, result, raw_log)
     VALUES (@id, @played_at, @format, @result, @raw_log)
@@ -24,6 +27,7 @@ export function insertBattle(args: {
       result=excluded.result,
       raw_log=excluded.raw_log
   `);
+
   stmt.run({
     id: args.id,
     played_at: args.played_at,
@@ -35,11 +39,13 @@ export function insertBattle(args: {
 
 export function listRecentBattles(limit = 20): BattleRow[] {
   const db = getDb();
-  const stmt = db.prepare(`
+
+  const stmt = db.prepare<{ limit: number }, BattleRow>(`
     SELECT id, played_at, format, result
     FROM battles
     ORDER BY played_at DESC
-    LIMIT ?
+    LIMIT @limit
   `);
-  return stmt.all(limit) as BattleRow[];
+
+  return stmt.all({ limit });
 }

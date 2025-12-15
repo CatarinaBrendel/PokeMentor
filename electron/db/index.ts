@@ -1,6 +1,6 @@
 import { app } from "electron";
-import path from "node:path";
 import fs from "node:fs";
+import path from "node:path";
 import { createRequire } from "node:module";
 import type BetterSqlite3 from "better-sqlite3";
 
@@ -12,35 +12,25 @@ let db: BetterSqlite3.Database | null = null;
 export function getDb() {
   if (db) return db;
 
-  const dir = path.join(app.getPath("userData"), "data");
+  const userData = app.getPath("userData");
+  const dir = path.join(userData, "data");
   fs.mkdirSync(dir, { recursive: true });
 
   const dbPath = path.join(dir, "pokementor.sqlite");
+
   db = new Database(dbPath);
 
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");
 
+  console.log("[db] userData =", userData);
+  console.log("[db] dbPath   =", dbPath);
+
   return db;
 }
 
-export async function migrate() {
-  await app.whenReady();
-  const db = getDb();
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS meta (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS battles (
-      id TEXT PRIMARY KEY,
-      played_at TEXT NOT NULL,
-      format TEXT,
-      result TEXT,
-      raw_log TEXT
-    );
-  `);
+export function closeDb() {
+  db?.close();
+  db = null;
 }

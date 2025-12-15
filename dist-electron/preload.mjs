@@ -20,9 +20,9 @@ electron.contextBridge.exposeInMainWorld("ipcRenderer", {
   // You can expose other APTs you need here.
   // ...
 });
-electron.contextBridge.exposeInMainWorld("pokeMentor", {
-  db: {
-    insertBattle: (args) => electron.ipcRenderer.invoke("db:battleInsert", args),
-    listRecentBattles: (limit) => electron.ipcRenderer.invoke("db:battleListRecent", limit)
+electron.contextBridge.exposeInMainWorld("api", {
+  teams: {
+    list: () => electron.ipcRenderer.invoke("db:teams:list"),
+    insert: (team) => electron.ipcRenderer.invoke("db:teams:insert", team)
   }
 });

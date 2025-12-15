@@ -1,0 +1,71 @@
+:root {
+  /* Dust Grey */
+  --dust-50:  #f4f3f0;
+  --dust-100: #e9e8e2;
+  --dust-200: #d4d0c4;
+  --dust-300: #beb9a7;
+  --dust-400: #a8a18a;
+  --dust-500: #938a6c;
+  --dust-600: #756e57;
+  --dust-700: #585341;
+  --dust-800: #3b372b;
+  --dust-900: #1d1c16;
+
+  /* Dry Sage */
+  --sage-50:  #f3f5f0;
+  --sage-100: #e7ebe0;
+  --sage-200: #cfd6c2;
+  --sage-300: #b7c2a3;
+  --sage-400: #9ead85;
+  --sage-500: #869966;
+  --sage-600: #6b7a52;
+  --sage-700: #515c3d;
+  --sage-800: #363d29;
+  --sage-900: #1b1f14;
+
+  /* Fern */
+  --fern-500: #689867;
+  --fern-700: #3e5b3e;
+
+  /* Hunter Green */
+  --hunter-500: #639c6e;
+  --hunter-700: #3c5d42;
+
+  /* Pine Teal */
+  --pine-500: #669980;
+  --pine-700: #3d5c4d;
+}
+
+/* Tell Tailwind to generate utilities like bg-sage-400 */
+@theme {
+  --color-dust-50: var(--dust-50);
+  --color-dust-100: var(--dust-100);
+  --color-dust-200: var(--dust-200);
+  --color-dust-300: var(--dust-300);
+  --color-dust-400: var(--dust-400);
+  --color-dust-500: var(--dust-500);
+  --color-dust-600: var(--dust-600);
+  --color-dust-700: var(--dust-700);
+  --color-dust-800: var(--dust-800);
+  --color-dust-900: var(--dust-900);
+
+  --color-sage-50: var(--sage-50);
+  --color-sage-100: var(--sage-100);
+  --color-sage-200: var(--sage-200);
+  --color-sage-300: var(--sage-300);
+  --color-sage-400: var(--sage-400);
+  --color-sage-500: var(--sage-500);
+  --color-sage-600: var(--sage-600);
+  --color-sage-700: var(--sage-700);
+  --color-sage-800: var(--sage-800);
+  --color-sage-900: var(--sage-900);
+
+  --color-fern-500: var(--fern-500);
+  --color-fern-700: var(--fern-700);
+
+  --color-hunter-500: var(--hunter-500);
+  --color-hunter-700: var(--hunter-700);
+
+  --color-pine-500: var(--pine-500);
+  --color-pine-700: var(--pine-700);
+}

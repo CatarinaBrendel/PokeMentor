@@ -1,8 +1,8 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
-import { migrate } from './db'
-import { insertBattle, listRecentBattles } from './dbActions' // ensure filename matches
 import { fileURLToPath } from 'node:url'
 import path, { dirname } from 'node:path'
+import { runMigrations } from './db/migrate'
+import { registerDbHandlers } from './ipc/dbHandlers'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -21,9 +21,15 @@ let win: BrowserWindow | null = null
 
 function createWindow() {
   win = new BrowserWindow({
+    width: 1380,
+    height: 800,
+    minWidth: 1280,
+    minHeight: 720,
     icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
+      contextIsolation: true,
+      nodeIntegration: false
     },
   })
 
@@ -51,17 +57,13 @@ app.on('activate', () => {
   }
 })
 
-app.whenReady().then(() => {
-  migrate()
+app.whenReady().then(async () => {
+  try {
+    await runMigrations();
+    registerDbHandlers();
+  } catch (err) {
+    console.error("Migration failed:", err);
+  }
 
-  ipcMain.handle('db:battleInsert', (_evt, args) => {
-    insertBattle(args)
-    return { ok: true }
-  })
-
-  ipcMain.handle('db:battleListRecent', (_evt, limit?: number) => {
-    return listRecentBattles(limit ?? 20)
-  })
-
-  createWindow()
-})
+  createWindow();
+});

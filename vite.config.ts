@@ -1,19 +1,31 @@
-import { defineConfig } from 'vite'
-import path from 'node:path'
-import electron from 'vite-plugin-electron/simple'
-import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
+import { defineConfig } from "vite";
+import path from "node:path";
+import electron from "vite-plugin-electron/simple";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import { viteStaticCopy } from "vite-plugin-static-copy";
 
-const nativeExternals = ['better-sqlite3', 'bindings', 'node-gyp-build']
+const nativeExternals = ["better-sqlite3", "bindings", "node-gyp-build"];
 
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
+
     electron({
       main: {
-        entry: 'electron/main.ts',
+        entry: "electron/main.ts",
         vite: {
+          plugins: [
+            viteStaticCopy({
+              targets: [
+                {
+                  src: "electron/db/migrations/*",
+                  dest: "db/migrations",
+                },
+              ],
+            }),
+          ],
           build: {
             rollupOptions: {
               external: nativeExternals,
@@ -21,8 +33,9 @@ export default defineConfig({
           },
         },
       },
+
       preload: {
-        input: path.join(__dirname, 'electron/preload.ts'),
+        input: path.join(__dirname, "electron/preload.ts"),
         vite: {
           build: {
             rollupOptions: {
@@ -31,7 +44,8 @@ export default defineConfig({
           },
         },
       },
-      renderer: process.env.NODE_ENV === 'test' ? undefined : {},
+
+      renderer: process.env.NODE_ENV === "test" ? undefined : {},
     }),
   ],
-})
+});
