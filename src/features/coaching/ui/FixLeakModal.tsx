@@ -1,4 +1,4 @@
-import Modal from "../../ui/Modal";
+import Modal from "../../../shared/ui/Modal";
 
 type FixLeakModalProps = {
   open: boolean;

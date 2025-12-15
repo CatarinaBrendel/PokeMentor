@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path, { dirname } from 'node:path'
 import { runMigrations } from './db/migrate'
@@ -61,9 +61,10 @@ app.whenReady().then(async () => {
   try {
     await runMigrations();
     registerDbHandlers();
-  } catch (err) {
-    console.error("Migration failed:", err);
-  }
+    createWindow();
 
-  createWindow();
+  } catch (err) {
+    console.error("[main] startup failed:", err);
+    app.quit();
+  }
 });

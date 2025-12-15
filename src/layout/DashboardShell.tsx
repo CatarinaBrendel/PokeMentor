@@ -1,7 +1,7 @@
 // src/layout/DashboardShell.tsx
 import React from "react";
 import Sidebar from "./Sidebar";
-import { usePersistedState } from "../hooks/usePersistedState";
+import { usePersistedState } from "../shared/hooks/usePersistedState";
 
 export type NavKey =
   | "dashboard"

@@ -1,29 +1,37 @@
 import { useState } from "react";
-import { TeamsApi } from "./teams.api";
+import { TeamsApi } from "../api/teams.api";
 
-export default function TeamImportCard() {
+type TeamImportCardProps = {
+  onImported?: () => void;
+};
+
+export default function TeamImportCard({ onImported } : TeamImportCardProps) {
   const [url, setUrl] = useState("");
   const [name, setName] = useState("");
   const [format, setFormat] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-    function getErrorMessage(err: unknown): string {
-    if (err instanceof Error) return err.message;
-    if (typeof err === "string") return err;
-    return "Import failed.";
-    }
+  function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return "Import failed.";
+  }
 
   async function onImport() {
     setBusy(true);
     setStatus(null);
+    
     try {
       const res = await TeamsApi.importPokepaste({
         url,
-        name: name || undefined,
-        format_ps: format || undefined,
+        name: name.trim() ? name : undefined,
+        format_ps: format.trim() ? format : undefined,
       });
       setStatus(`Imported team v${res.version_num} (${res.slots_inserted} slots).`);
+      setUrl(""); setName(""); setFormat("");
+
+      onImported?.();
     } catch (err: unknown) {
       setStatus(getErrorMessage(err));
     } finally {

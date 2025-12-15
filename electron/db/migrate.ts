@@ -1,21 +1,24 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { app } from "electron";
 import { getDb } from "../db/index";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 type MigrationRow = { name: string };
 
 function findMigrationsDir() {
-  const candidates = [
-    // when bundled/copied: dist-electron/db/migrations (because migrate.js ends up in dist-electron/db)
-    path.join(__dirname, "migrations"),
+  const appRoot = process.env.APP_ROOT; // you already set this in main.ts
 
-    // when running from source during dev (fallback)
-    path.join(process.cwd(), "electron", "db", "migrations"),
-  ];
+  const candidates = [
+    // Dev: always stable if APP_ROOT is set
+    appRoot ? path.join(appRoot, "electron", "db", "migrations") : null,
+
+    // Packaged: resourcesPath (you may copy migrations there at build time)
+    app.isPackaged ? path.join(process.resourcesPath, "db", "migrations") : null,
+
+    // Last-resort fallback (dev only)
+    !app.isPackaged ? path.join(process.cwd(), "electron", "db", "migrations") : null,
+  ].filter(Boolean) as string[];
 
   for (const dir of candidates) {
     if (fs.existsSync(dir)) return dir;
@@ -26,8 +29,13 @@ function findMigrationsDir() {
   );
 }
 
-export function runMigrations() {
+export async function runMigrations() {
+  await app.whenReady();
   const db = getDb();
+
+  db.pragma("journal_mode = DELETE");
+  db.pragma("foreign_keys = ON");
+  db.pragma("busy_timeout = 5000");
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

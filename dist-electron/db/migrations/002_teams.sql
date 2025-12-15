@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS team_versions (
   source_url TEXT,                     -- pokepast.es link
   source_hash TEXT NOT NULL,           -- hash(canonical export text)
   source_text TEXT NOT NULL,           -- the full paste text (for re-parse)
+  source_author TEXT,
+  source_title TEXT,
+  source_format TEXT,
   notes TEXT,
   created_at TEXT NOT NULL,
   UNIQUE(team_id, version_num),

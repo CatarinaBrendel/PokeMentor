@@ -1,11 +1,15 @@
 import crypto from "node:crypto";
 import { randomUUID } from "node:crypto";
-import { getDb } from "../index";
+import { getDb } from "../../../db/index";
+import { teamsQueries } from "../teams/teams";
 
-type ImportArgs = {
-  url: string;
-  name?: string;
-  format_ps?: string;
+export type ImportArgs = { url: string; name?: string; format_ps?: string };
+
+export type ImportTeamResult = {
+  team_id: string;
+  version_id: string;
+  version_num: number;
+  slots_inserted: number;
 };
 
 type StatBlock = {
@@ -35,8 +39,52 @@ type ParsedSet = {
   iv_hp: number | null; iv_atk: number | null; iv_def: number | null;
   iv_spa: number | null; iv_spd: number | null; iv_spe: number | null;
 
-  moves: string[]; // keep for hashing/canonicalization now (you’ll add moves table later)
+  moves: string[];
 };
+
+type PokepasteMeta = {
+  title: string | null;
+  author: string | null;
+  format: string | null;
+};
+
+function decodeHtml(s: string) {
+  return s
+    .replace("&nbsp;", " ")
+    .replace("&amp;", "&")
+    .replace("&lt;", "<")
+    .replace("&gt;", ">")
+    .replace("&quot;", "\"")
+    .replace("&#39;", "'");
+}
+
+function stripTags(s: string) {
+  return decodeHtml(s.replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim();
+}
+
+function parsePokepasteMetaFromHtml(html: string): PokepasteMeta {
+  const asideMatch = html.match(/<aside\b[^>]*>([\s\S]*?)<\/aside>/i);
+  const aside = asideMatch?.[1] ?? html;
+
+  const title = (() => {
+    const m = aside.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i);
+    return m ? stripTags(m[1]) : null;
+  })();
+
+  const author = (() => {
+    const m = aside.match(/<h2\b[^>]*>([\s\S]*?)<\/h2>/i);
+    if (!m) return null;
+    const t = stripTags(m[1]);
+    return t.replace(/^by\s+/i, "").trim() || null;
+  })();
+
+  const format = (() => {
+    const m = aside.match(/<p\b[^>]*>\s*Format:\s*([^<]+)\s*<\/p>/i);
+    return m ? stripTags(m[1]) : null;
+  })();
+
+  return { title, author, format };
+}
 
 function sha256(s: string) {
   return crypto.createHash("sha256").update(s, "utf8").digest("hex");
@@ -57,33 +105,55 @@ function normalizePokepasteUrl(url: string) {
   };
 }
 
-async function fetchText(url: string) {
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch Pokepaste (${res.status})`);
+async function fetchText(url: string, timeoutMs = 10_000): Promise<string> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: {
+        // Helps avoid occasional “smart” responses
+        "User-Agent": "PokeMentor/1.0",
+        "Accept": "text/html, text/plain;q=0.9, */*;q=0.8",
+      },
+    });
+
+    if (!res.ok) {
+      throw new Error(`Fetch failed (${res.status}) for ${url}`);
+    }
+    return await res.text();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`Failed to fetch ${url}: ${msg}`);
+  } finally {
+    clearTimeout(t);
   }
-  return res.text();
+}
+
+function emptyStats(): StatBlock {
+  return { hp: null, atk: null, def: null, spa: null, spd: null, spe: null };
 }
 
 function parseEvIvLine(line: string): Partial<Record<keyof StatBlock, number>> {
   // "EVs: 4 HP / 252 Atk / 252 Spe"
-  // "IVs: 0 Atk / 30 Spe"
-  const out: Record<string, number> = {};
+  const out: Partial<Record<keyof StatBlock, number>> = {};
   const parts = line.split(":")[1]?.split("/").map(p => p.trim()) ?? [];
   for (const p of parts) {
     const mm = p.match(/^(\d+)\s+(HP|Atk|Def|SpA|SpD|Spe)$/i);
     if (!mm) continue;
     const val = Number(mm[1]);
-    const stat = mm[2].toLowerCase();
+    const statToken = mm[2].toLowerCase();
+    const stat =
+      statToken === "hp" ? "hp"
+      : statToken === "atk" ? "atk"
+      : statToken === "def" ? "def"
+      : statToken === "spa" ? "spa"
+      : statToken === "spd" ? "spd"
+      : "spe";
     out[stat] = val;
   }
   return out;
-}
-
-function emptyStats(): StatBlock {
-  return {
-    hp: null, atk: null, def: null, spa: null, spd: null, spe: null,
-  } as const;
 }
 
 function parseShowdownExport(text: string): ParsedSet[] {
@@ -99,17 +169,11 @@ function parseShowdownExport(text: string): ParsedSet[] {
     const lines = block.split("\n").map(l => l.trim()).filter(Boolean);
     if (lines.length === 0) continue;
 
-    // First line examples:
-    // "Gholdengo @ Leftovers"
-    // "Bobby (Garchomp) @ Choice Scarf"
-    // "Incineroar (M) @ Sitrus Berry"
     const first = lines[0];
 
-    // Extract item
     const [left, itemPart] = first.split(" @ ");
     const item_name = itemPart ? itemPart.trim() : null;
 
-    // Extract gender if present: "(M)" or "(F)" near end
     let gender: "M" | "F" | null = null;
     let left2 = left.trim();
     const genderMatch = left2.match(/\((M|F)\)\s*$/);
@@ -118,8 +182,6 @@ function parseShowdownExport(text: string): ParsedSet[] {
       left2 = left2.replace(/\((M|F)\)\s*$/, "").trim();
     }
 
-    // Nickname/species:
-    // "Nickname (Species)" or "Species"
     let nickname: string | null = null;
     let species_name = left2;
 
@@ -136,8 +198,8 @@ function parseShowdownExport(text: string): ParsedSet[] {
     let happiness: number | null = null;
     let nature: string | null = null;
 
-    let ev = { ...emptyStats() };
-    let iv = { ...emptyStats() };
+    let ev = emptyStats();
+    let iv = emptyStats();
     const moves: string[] = [];
 
     for (const line of lines.slice(1)) {
@@ -155,24 +217,10 @@ function parseShowdownExport(text: string): ParsedSet[] {
         tera_type = line.slice("Tera Type:".length).trim() || null;
       } else if (line.startsWith("EVs:")) {
         const m = parseEvIvLine(line);
-        ev = {
-          hp: m.hp ?? ev.hp,
-          atk: m.atk ?? ev.atk,
-          def: m.def ?? ev.def,
-          spa: m.spa ?? ev.spa,
-          spd: m.spd ?? ev.spd,
-          spe: m.spe ?? ev.spe,
-        };
+        ev = { ...ev, ...m };
       } else if (line.startsWith("IVs:")) {
         const m = parseEvIvLine(line);
-        iv = {
-          hp: m.hp ?? iv.hp,
-          atk: m.atk ?? iv.atk,
-          def: m.def ?? iv.def,
-          spa: m.spa ?? iv.spa,
-          spd: m.spd ?? iv.spd,
-          spe: m.spe ?? iv.spe,
-        };
+        iv = { ...iv, ...m };
       } else if (line.endsWith(" Nature")) {
         nature = line.replace(" Nature", "").trim() || null;
       } else if (line.startsWith("- ")) {
@@ -206,7 +254,6 @@ function parseShowdownExport(text: string): ParsedSet[] {
 }
 
 function canonicalizeSet(s: ParsedSet) {
-  // stable text for hashing/dedupe
   return [
     `species=${s.species_name}`,
     `nickname=${s.nickname ?? ""}`,
@@ -218,100 +265,64 @@ function canonicalizeSet(s: ParsedSet) {
     `tera=${s.tera_type ?? ""}`,
     `happiness=${s.happiness ?? ""}`,
     `nature=${s.nature ?? ""}`,
-    `ev=${[s.ev_hp,s.ev_atk,s.ev_def,s.ev_spa,s.ev_spd,s.ev_spe].map(v=>v ?? "").join(",")}`,
-    `iv=${[s.iv_hp,s.iv_atk,s.iv_def,s.iv_spa,s.iv_spd,s.iv_spe].map(v=>v ?? "").join(",")}`,
+    `ev=${[s.ev_hp, s.ev_atk, s.ev_def, s.ev_spa, s.ev_spd, s.ev_spe].map(v => v ?? "").join(",")}`,
+    `iv=${[s.iv_hp, s.iv_atk, s.iv_def, s.iv_spa, s.iv_spd, s.iv_spe].map(v => v ?? "").join(",")}`,
     `moves=${s.moves.join("|")}`,
   ].join("\n");
 }
 
-export async function importTeamFromPokepaste(args: ImportArgs) {
-  const { rawUrl, viewUrl } = normalizePokepasteUrl(args.url);
-  const source_text = await fetchText(rawUrl);
+export async function importTeamFromPokepaste(args: ImportArgs): Promise<ImportTeamResult> {
+  const { viewUrl, rawUrl } = normalizePokepasteUrl(args.url);
 
-  const parsed = parseShowdownExport(source_text);
-  if (parsed.length === 0) {
-    throw new Error("No Pokémon sets found in Pokepaste.");
-  }
+  // Fetch in parallel (faster, still simple)
+  const [rawText, viewHtml] = await Promise.all([
+    fetchText(rawUrl),
+    fetchText(viewUrl),
+  ]);
+
+  const meta = parsePokepasteMetaFromHtml(viewHtml);
+
+  const parsedSets = parseShowdownExport(rawText);
+  if (parsedSets.length === 0) throw new Error("No Pokémon sets found in Pokepaste.");
 
   const now = new Date().toISOString();
-  const source_hash = sha256(source_text.trim());
+  const source_hash = sha256(rawText.trim());
+
+  const finalName = args.name?.trim() || meta.title?.trim() || "Imported Team";
+  const finalFormat = args.format_ps?.trim() || meta.format?.trim() || null;
 
   const db = getDb();
+  const q = teamsQueries(db);
 
-  const insert = db.transaction(() => {
+  return db.transaction(() => {
     const team_id = randomUUID();
-
-    db.prepare(`
-      INSERT INTO teams (id, name, format_ps, created_at, updated_at)
-      VALUES (@id, @name, @format_ps, @created_at, @updated_at)
-    `).run({
-      id: team_id,
-      name: args.name ?? null,
-      format_ps: args.format_ps ?? null,
-      created_at: now,
-      updated_at: now,
-    });
-
+    const version_id = randomUUID();
     const version_num = 1;
 
-    const team_version_id = randomUUID();
-    db.prepare(`
-      INSERT INTO team_versions (
-        id, team_id, version_num, source_type, source_url, source_hash, source_text, notes, created_at
-      )
-      VALUES (
-        @id, @team_id, @version_num, 'pokepaste', @source_url, @source_hash, @source_text, NULL, @created_at
-      )
-    `).run({
-      id: team_version_id,
+    q.insertTeam({ id: team_id, name: finalName, format_ps: finalFormat, now });
+
+    q.insertTeamVersion({
+      id: version_id,
       team_id,
       version_num,
       source_url: viewUrl,
       source_hash,
-      source_text,
-      created_at: now,
+      source_text: rawText,
+      source_title: meta.title,
+      source_author: meta.author,
+      source_format: meta.format,
+      now,
     });
 
-    const selectSet = db.prepare<{ set_hash: string }, { id: string }>(`
-      SELECT id FROM pokemon_sets WHERE set_hash = @set_hash LIMIT 1
-    `);
-
-    const insertSet = db.prepare(`
-      INSERT INTO pokemon_sets (
-        id, nickname, species_name, species_id,
-        item_name, item_id,
-        ability_name, ability_id,
-        level, gender, shiny, tera_type, happiness,
-        nature,
-        ev_hp, ev_atk, ev_def, ev_spa, ev_spd, ev_spe,
-        iv_hp, iv_atk, iv_def, iv_spa, iv_spd, iv_spe,
-        set_hash, created_at
-      ) VALUES (
-        @id, @nickname, @species_name, NULL,
-        @item_name, NULL,
-        @ability_name, NULL,
-        @level, @gender, @shiny, @tera_type, @happiness,
-        @nature,
-        @ev_hp, @ev_atk, @ev_def, @ev_spa, @ev_spd, @ev_spe,
-        @iv_hp, @iv_atk, @iv_def, @iv_spa, @iv_spd, @iv_spe,
-        @set_hash, @created_at
-      )
-    `);
-
-    const insertSlot = db.prepare(`
-      INSERT INTO team_slots (team_version_id, slot_index, pokemon_set_id)
-      VALUES (@team_version_id, @slot_index, @pokemon_set_id)
-    `);
-
     let slotIndex = 1;
-    for (const s of parsed.slice(0, 6)) {
+
+    for (const s of parsedSets.slice(0, 6)) {
       const set_hash = sha256(canonicalizeSet(s));
-      const existing = selectSet.get({ set_hash });
+      const existingId = q.findPokemonSetIdByHash(set_hash);
+      const pokemon_set_id = existingId ?? randomUUID();
 
-      const pokemon_set_id = existing?.id ?? randomUUID();
-
-      if (!existing) {
-        insertSet.run({
+      if (!existingId) {
+        q.insertPokemonSet({
           id: pokemon_set_id,
           nickname: s.nickname,
           species_name: s.species_name,
@@ -323,30 +334,24 @@ export async function importTeamFromPokepaste(args: ImportArgs) {
           tera_type: s.tera_type,
           happiness: s.happiness,
           nature: s.nature,
-          ev_hp: s.ev_hp, ev_atk: s.ev_atk, ev_def: s.ev_def, ev_spa: s.ev_spa, ev_spd: s.ev_spd, ev_spe: s.ev_spe,
-          iv_hp: s.iv_hp, iv_atk: s.iv_atk, iv_def: s.iv_def, iv_spa: s.iv_spa, iv_spd: s.iv_spd, iv_spe: s.iv_spe,
+          ev_hp: s.ev_hp, ev_atk: s.ev_atk, ev_def: s.ev_def,
+          ev_spa: s.ev_spa, ev_spd: s.ev_spd, ev_spe: s.ev_spe,
+          iv_hp: s.iv_hp, iv_atk: s.iv_atk, iv_def: s.iv_def,
+          iv_spa: s.iv_spa, iv_spd: s.iv_spd, iv_spe: s.iv_spe,
           set_hash,
-          created_at: now,
+          now,
         });
       }
 
-      insertSlot.run({
-        team_version_id,
-        slot_index: slotIndex,
-        pokemon_set_id,
-      });
-
+      q.insertTeamSlot({ team_version_id: version_id, slot_index: slotIndex, pokemon_set_id });
       slotIndex += 1;
     }
 
     return {
       team_id,
-      team_version_id,
+      version_id,
       version_num,
-      slots_inserted: Math.min(parsed.length, 6),
-      source_url: viewUrl,
+      slots_inserted: Math.min(parsedSets.length, 6),
     };
-  });
-
-  return insert();
+  })();
 }

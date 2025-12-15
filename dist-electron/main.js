@@ -21,15 +21,16 @@ function getDb() {
   console.log("[db] dbPath   =", dbPath);
   return db;
 }
-const __filename$2 = fileURLToPath(import.meta.url);
-const __dirname$2 = path.dirname(__filename$2);
 function findMigrationsDir() {
+  const appRoot = process.env.APP_ROOT;
   const candidates = [
-    // when bundled/copied: dist-electron/db/migrations (because migrate.js ends up in dist-electron/db)
-    path.join(__dirname$2, "migrations"),
-    // when running from source during dev (fallback)
-    path.join(process.cwd(), "electron", "db", "migrations")
-  ];
+    // Dev: always stable if APP_ROOT is set
+    appRoot ? path.join(appRoot, "electron", "db", "migrations") : null,
+    // Packaged: resourcesPath (you may copy migrations there at build time)
+    app.isPackaged ? path.join(process.resourcesPath, "db", "migrations") : null,
+    // Last-resort fallback (dev only)
+    !app.isPackaged ? path.join(process.cwd(), "electron", "db", "migrations") : null
+  ].filter(Boolean);
   for (const dir of candidates) {
     if (fs.existsSync(dir)) return dir;
   }
@@ -38,8 +39,12 @@ function findMigrationsDir() {
 ${candidates.map((d) => `- ${d}`).join("\n")}`
   );
 }
-function runMigrations() {
+async function runMigrations() {
+  await app.whenReady();
   const db2 = getDb();
+  db2.pragma("journal_mode = DELETE");
+  db2.pragma("foreign_keys = ON");
+  db2.pragma("busy_timeout = 5000");
   db2.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id INTEGER PRIMARY KEY,
@@ -69,6 +74,185 @@ function runMigrations() {
   }
   console.log("[migrate] done. newly applied:", appliedNow);
 }
+function teamsQueries(db2) {
+  const insertTeamStmt = db2.prepare(`
+    INSERT INTO teams (id, name, format_ps, created_at, updated_at)
+    VALUES (@id, @name, @format_ps, @now, @now)
+  `);
+  const insertVersionStmt = db2.prepare(`
+    INSERT INTO team_versions (
+      id, team_id, version_num,
+      source_type, source_url, source_hash, source_text,
+      source_title, source_author, source_format,
+      notes, created_at
+    )
+    VALUES (
+      @id, @team_id, @version_num,
+      'pokepaste', @source_url, @source_hash, @source_text,
+      @source_title, @source_author, @source_format,
+      NULL, @now
+    )
+  `);
+  const selectSetByHashStmt = db2.prepare(`
+    SELECT id FROM pokemon_sets WHERE set_hash = @set_hash LIMIT 1
+  `);
+  const insertSetStmt = db2.prepare(`
+    INSERT INTO pokemon_sets (
+      id, nickname, species_name, species_id,
+      item_name, item_id,
+      ability_name, ability_id,
+      level, gender, shiny, tera_type, happiness,
+      nature,
+      ev_hp, ev_atk, ev_def, ev_spa, ev_spd, ev_spe,
+      iv_hp, iv_atk, iv_def, iv_spa, iv_spd, iv_spe,
+      set_hash, created_at
+    )
+    VALUES (
+      @id, @nickname, @species_name, NULL,
+      @item_name, NULL,
+      @ability_name, NULL,
+      @level, @gender, @shiny, @tera_type, @happiness,
+      @nature,
+      @ev_hp, @ev_atk, @ev_def, @ev_spa, @ev_spd, @ev_spe,
+      @iv_hp, @iv_atk, @iv_def, @iv_spa, @iv_spd, @iv_spe,
+      @set_hash, @now
+    )
+  `);
+  const insertSlotStmt = db2.prepare(`
+    INSERT INTO team_slots (team_version_id, slot_index, pokemon_set_id)
+    VALUES (@team_version_id, @slot_index, @pokemon_set_id)
+  `);
+  const listTeamsStmt = db2.prepare(`
+    SELECT
+      t.id,
+      t.name,
+      t.format_ps,
+      t.updated_at,
+      (
+        SELECT MAX(tv.version_num)
+        FROM team_versions tv
+        WHERE tv.team_id = t.id
+      ) AS latest_version_num
+    FROM teams t
+    ORDER BY t.updated_at DESC
+  `);
+  const deleteTeamStmt = db2.prepare(`
+    DELETE FROM teams
+    WHERE id = ?
+  `);
+  const getTeamStmt = db2.prepare(`
+    SELECT id, name, format_ps, created_at, updated_at
+    FROM teams
+    WHERE id = ?
+    LIMIT 1
+  `);
+  const getLatestVersionStmt = db2.prepare(`
+    SELECT
+      id,
+      team_id,
+      version_num,
+      source_type,
+      source_url,
+      source_hash,
+      source_title,
+      source_author,
+      source_format,
+      created_at
+    FROM team_versions
+    WHERE team_id = ?
+    ORDER BY version_num DESC
+    LIMIT 1
+  `);
+  const getSlotsForVersionStmt = db2.prepare(`
+    SELECT
+      ts.slot_index,
+      ts.pokemon_set_id,
+
+      ps.nickname,
+      ps.species_name,
+      ps.item_name,
+      ps.ability_name,
+
+      ps.level,
+      ps.gender,
+      ps.shiny,
+      ps.tera_type,
+      ps.happiness,
+      ps.nature,
+
+      ps.ev_hp, ps.ev_atk, ps.ev_def,
+      ps.ev_spa, ps.ev_spd, ps.ev_spe,
+
+      ps.iv_hp, ps.iv_atk, ps.iv_def,
+      ps.iv_spa, ps.iv_spd, ps.iv_spe
+    FROM team_slots ts
+    JOIN pokemon_sets ps ON ps.id = ts.pokemon_set_id
+    WHERE ts.team_version_id = ?
+    ORDER BY ts.slot_index ASC
+  `);
+  return {
+    insertTeam(args) {
+      insertTeamStmt.run(args);
+    },
+    insertTeamVersion(args) {
+      insertVersionStmt.run(args);
+    },
+    findPokemonSetIdByHash(set_hash) {
+      const row = selectSetByHashStmt.get({ set_hash });
+      return (row == null ? void 0 : row.id) ?? null;
+    },
+    insertPokemonSet(args) {
+      insertSetStmt.run(args);
+    },
+    insertTeamSlot(args) {
+      insertSlotStmt.run(args);
+    },
+    listTeams() {
+      return listTeamsStmt.all();
+    },
+    deleteTeam(teamId) {
+      deleteTeamStmt.run(teamId);
+    },
+    getTeamDetails(teamId) {
+      const team = getTeamStmt.get(teamId);
+      if (!team) {
+        throw new Error("Team not found");
+      }
+      const latestVersion = getLatestVersionStmt.get(teamId) ?? null;
+      const slots = latestVersion ? getSlotsForVersionStmt.all(latestVersion.id) : [];
+      return {
+        team,
+        latestVersion,
+        slots
+      };
+    }
+  };
+}
+function decodeHtml(s) {
+  return s.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&#39;", "'");
+}
+function stripTags(s) {
+  return decodeHtml(s.replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim();
+}
+function parsePokepasteMetaFromHtml(html) {
+  const asideMatch = html.match(/<aside\b[^>]*>([\s\S]*?)<\/aside>/i);
+  const aside = (asideMatch == null ? void 0 : asideMatch[1]) ?? html;
+  const title = (() => {
+    const m = aside.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i);
+    return m ? stripTags(m[1]) : null;
+  })();
+  const author = (() => {
+    const m = aside.match(/<h2\b[^>]*>([\s\S]*?)<\/h2>/i);
+    if (!m) return null;
+    const t = stripTags(m[1]);
+    return t.replace(/^by\s+/i, "").trim() || null;
+  })();
+  const format = (() => {
+    const m = aside.match(/<p\b[^>]*>\s*Format:\s*([^<]+)\s*<\/p>/i);
+    return m ? stripTags(m[1]) : null;
+  })();
+  return { title, author, format };
+}
 function sha256(s) {
   return crypto.createHash("sha256").update(s, "utf8").digest("hex");
 }
@@ -82,12 +266,31 @@ function normalizePokepasteUrl(url) {
     rawUrl: `https://pokepast.es/${id}/raw`
   };
 }
-async function fetchText(url) {
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch Pokepaste (${res.status})`);
+async function fetchText(url, timeoutMs = 1e4) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: {
+        // Helps avoid occasional “smart” responses
+        "User-Agent": "PokeMentor/1.0",
+        "Accept": "text/html, text/plain;q=0.9, */*;q=0.8"
+      }
+    });
+    if (!res.ok) {
+      throw new Error(`Fetch failed (${res.status}) for ${url}`);
+    }
+    return await res.text();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`Failed to fetch ${url}: ${msg}`);
+  } finally {
+    clearTimeout(t);
   }
-  return res.text();
+}
+function emptyStats() {
+  return { hp: null, atk: null, def: null, spa: null, spd: null, spe: null };
 }
 function parseEvIvLine(line) {
   var _a;
@@ -97,20 +300,11 @@ function parseEvIvLine(line) {
     const mm = p.match(/^(\d+)\s+(HP|Atk|Def|SpA|SpD|Spe)$/i);
     if (!mm) continue;
     const val = Number(mm[1]);
-    const stat = mm[2].toLowerCase();
+    const statToken = mm[2].toLowerCase();
+    const stat = statToken === "hp" ? "hp" : statToken === "atk" ? "atk" : statToken === "def" ? "def" : statToken === "spa" ? "spa" : statToken === "spd" ? "spd" : "spe";
     out[stat] = val;
   }
   return out;
-}
-function emptyStats() {
-  return {
-    hp: null,
-    atk: null,
-    def: null,
-    spa: null,
-    spd: null,
-    spe: null
-  };
 }
 function parseShowdownExport(text) {
   const blocks = text.replace(/\r\n/g, "\n").split(/\n\s*\n/g).map((b) => b.trim()).filter(Boolean);
@@ -141,8 +335,8 @@ function parseShowdownExport(text) {
     let tera_type = null;
     let happiness = null;
     let nature = null;
-    let ev = { ...emptyStats() };
-    let iv = { ...emptyStats() };
+    let ev = emptyStats();
+    let iv = emptyStats();
     const moves = [];
     for (const line of lines.slice(1)) {
       if (line.startsWith("Ability:")) {
@@ -159,24 +353,10 @@ function parseShowdownExport(text) {
         tera_type = line.slice("Tera Type:".length).trim() || null;
       } else if (line.startsWith("EVs:")) {
         const m = parseEvIvLine(line);
-        ev = {
-          hp: m.hp ?? ev.hp,
-          atk: m.atk ?? ev.atk,
-          def: m.def ?? ev.def,
-          spa: m.spa ?? ev.spa,
-          spd: m.spd ?? ev.spd,
-          spe: m.spe ?? ev.spe
-        };
+        ev = { ...ev, ...m };
       } else if (line.startsWith("IVs:")) {
         const m = parseEvIvLine(line);
-        iv = {
-          hp: m.hp ?? iv.hp,
-          atk: m.atk ?? iv.atk,
-          def: m.def ?? iv.def,
-          spa: m.spa ?? iv.spa,
-          spd: m.spd ?? iv.spd,
-          spe: m.spe ?? iv.spe
-        };
+        iv = { ...iv, ...m };
       } else if (line.endsWith(" Nature")) {
         nature = line.replace(" Nature", "").trim() || null;
       } else if (line.startsWith("- ")) {
@@ -229,80 +409,45 @@ function canonicalizeSet(s) {
   ].join("\n");
 }
 async function importTeamFromPokepaste(args) {
-  const { rawUrl, viewUrl } = normalizePokepasteUrl(args.url);
-  const source_text = await fetchText(rawUrl);
-  const parsed = parseShowdownExport(source_text);
-  if (parsed.length === 0) {
-    throw new Error("No Pokémon sets found in Pokepaste.");
-  }
+  var _a, _b, _c, _d;
+  const { viewUrl, rawUrl } = normalizePokepasteUrl(args.url);
+  const [rawText, viewHtml] = await Promise.all([
+    fetchText(rawUrl),
+    fetchText(viewUrl)
+  ]);
+  const meta = parsePokepasteMetaFromHtml(viewHtml);
+  const parsedSets = parseShowdownExport(rawText);
+  if (parsedSets.length === 0) throw new Error("No Pokémon sets found in Pokepaste.");
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const source_hash = sha256(source_text.trim());
+  const source_hash = sha256(rawText.trim());
+  const finalName = ((_a = args.name) == null ? void 0 : _a.trim()) || ((_b = meta.title) == null ? void 0 : _b.trim()) || "Imported Team";
+  const finalFormat = ((_c = args.format_ps) == null ? void 0 : _c.trim()) || ((_d = meta.format) == null ? void 0 : _d.trim()) || null;
   const db2 = getDb();
-  const insert = db2.transaction(() => {
+  const q = teamsQueries(db2);
+  return db2.transaction(() => {
     const team_id = randomUUID();
-    db2.prepare(`
-      INSERT INTO teams (id, name, format_ps, created_at, updated_at)
-      VALUES (@id, @name, @format_ps, @created_at, @updated_at)
-    `).run({
-      id: team_id,
-      name: args.name ?? null,
-      format_ps: args.format_ps ?? null,
-      created_at: now,
-      updated_at: now
-    });
+    const version_id = randomUUID();
     const version_num = 1;
-    const team_version_id = randomUUID();
-    db2.prepare(`
-      INSERT INTO team_versions (
-        id, team_id, version_num, source_type, source_url, source_hash, source_text, notes, created_at
-      )
-      VALUES (
-        @id, @team_id, @version_num, 'pokepaste', @source_url, @source_hash, @source_text, NULL, @created_at
-      )
-    `).run({
-      id: team_version_id,
+    q.insertTeam({ id: team_id, name: finalName, format_ps: finalFormat, now });
+    q.insertTeamVersion({
+      id: version_id,
       team_id,
       version_num,
       source_url: viewUrl,
       source_hash,
-      source_text,
-      created_at: now
+      source_text: rawText,
+      source_title: meta.title,
+      source_author: meta.author,
+      source_format: meta.format,
+      now
     });
-    const selectSet = db2.prepare(`
-      SELECT id FROM pokemon_sets WHERE set_hash = @set_hash LIMIT 1
-    `);
-    const insertSet = db2.prepare(`
-      INSERT INTO pokemon_sets (
-        id, nickname, species_name, species_id,
-        item_name, item_id,
-        ability_name, ability_id,
-        level, gender, shiny, tera_type, happiness,
-        nature,
-        ev_hp, ev_atk, ev_def, ev_spa, ev_spd, ev_spe,
-        iv_hp, iv_atk, iv_def, iv_spa, iv_spd, iv_spe,
-        set_hash, created_at
-      ) VALUES (
-        @id, @nickname, @species_name, NULL,
-        @item_name, NULL,
-        @ability_name, NULL,
-        @level, @gender, @shiny, @tera_type, @happiness,
-        @nature,
-        @ev_hp, @ev_atk, @ev_def, @ev_spa, @ev_spd, @ev_spe,
-        @iv_hp, @iv_atk, @iv_def, @iv_spa, @iv_spd, @iv_spe,
-        @set_hash, @created_at
-      )
-    `);
-    const insertSlot = db2.prepare(`
-      INSERT INTO team_slots (team_version_id, slot_index, pokemon_set_id)
-      VALUES (@team_version_id, @slot_index, @pokemon_set_id)
-    `);
     let slotIndex = 1;
-    for (const s of parsed.slice(0, 6)) {
+    for (const s of parsedSets.slice(0, 6)) {
       const set_hash = sha256(canonicalizeSet(s));
-      const existing = selectSet.get({ set_hash });
-      const pokemon_set_id = (existing == null ? void 0 : existing.id) ?? randomUUID();
-      if (!existing) {
-        insertSet.run({
+      const existingId = q.findPokemonSetIdByHash(set_hash);
+      const pokemon_set_id = existingId ?? randomUUID();
+      if (!existingId) {
+        q.insertPokemonSet({
           id: pokemon_set_id,
           nickname: s.nickname,
           species_name: s.species_name,
@@ -327,29 +472,55 @@ async function importTeamFromPokepaste(args) {
           iv_spd: s.iv_spd,
           iv_spe: s.iv_spe,
           set_hash,
-          created_at: now
+          now
         });
       }
-      insertSlot.run({
-        team_version_id,
-        slot_index: slotIndex,
-        pokemon_set_id
-      });
+      q.insertTeamSlot({ team_version_id: version_id, slot_index: slotIndex, pokemon_set_id });
       slotIndex += 1;
     }
     return {
       team_id,
-      team_version_id,
+      version_id,
       version_num,
-      slots_inserted: Math.min(parsed.length, 6),
-      source_url: viewUrl
+      slots_inserted: Math.min(parsedSets.length, 6)
     };
-  });
-  return insert();
+  })();
 }
+function listTeams() {
+  const db2 = getDb();
+  return teamsQueries(db2).listTeams();
+}
+function deleteTeam(teamId) {
+  const db2 = getDb();
+  const q = teamsQueries(db2);
+  q.deleteTeam(teamId);
+  return { ok: true };
+}
+function getTeamDetails(teamId) {
+  const db2 = getDb();
+  const q = teamsQueries(db2);
+  return q.getTeamDetails(teamId);
+}
+ipcMain.removeHandler("db:teams:importPokepaste");
+ipcMain.removeHandler("db:teams:list");
 function registerDbHandlers() {
   ipcMain.handle("db:teams:importPokepaste", async (_evt, args) => {
-    return importTeamFromPokepaste(args);
+    const result = importTeamFromPokepaste(args);
+    return {
+      team_id: (await result).team_id,
+      version_id: (await result).version_id,
+      version_num: (await result).version_num,
+      slots_inserted: (await result).slots_inserted
+    };
+  });
+  ipcMain.handle("db:teams:list", async () => {
+    return listTeams();
+  });
+  ipcMain.handle("db:teams:delete", async (_evt, teamId) => {
+    return deleteTeam(teamId);
+  });
+  ipcMain.handle("db:teams:getDetails", async (_evt, teamId) => {
+    return getTeamDetails(teamId);
   });
 }
 const __filename$1 = fileURLToPath(import.meta.url);
@@ -397,10 +568,11 @@ app.whenReady().then(async () => {
   try {
     await runMigrations();
     registerDbHandlers();
+    createWindow();
   } catch (err) {
-    console.error("Migration failed:", err);
+    console.error("[main] startup failed:", err);
+    app.quit();
   }
-  createWindow();
 });
 export {
   MAIN_DIST,

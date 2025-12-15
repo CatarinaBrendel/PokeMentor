@@ -17,11 +17,14 @@ electron.contextBridge.exposeInMainWorld("ipcRenderer", {
     const [channel, ...omit] = args;
     return electron.ipcRenderer.invoke(channel, ...omit);
   }
-  // You can expose other APTs you need here.
-  // ...
 });
 electron.contextBridge.exposeInMainWorld("api", {
   teams: {
-    importPokepaste: (args) => electron.ipcRenderer.invoke("db:teams:importPokepaste", args)
+    importPokepaste: (args) => electron.ipcRenderer.invoke("db:teams:importPokepaste", args),
+    listTeams: () => electron.ipcRenderer.invoke("db:teams:list"),
+    deleteTeam: (teamId) => {
+      electron.ipcRenderer.invoke("db:teams:delete", teamId);
+    },
+    getDetails: (teamId) => electron.ipcRenderer.invoke("db:teams:getDetails", teamId)
   }
 });

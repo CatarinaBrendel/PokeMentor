@@ -1,4 +1,5 @@
 import { ipcRenderer, contextBridge } from 'electron'
+import { TeamListRow } from './db/queries/teams/teams.types'
 
 // --------- Expose some API to the Renderer process ---------
 contextBridge.exposeInMainWorld('ipcRenderer', {
@@ -18,9 +19,6 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
     const [channel, ...omit] = args
     return ipcRenderer.invoke(channel, ...omit)
   },
-
-  // You can expose other APTs you need here.
-  // ...
 })
 
 // --------- High-level PokéMentor API ---------
@@ -28,5 +26,14 @@ contextBridge.exposeInMainWorld("api", {
   teams: {
     importPokepaste: (args: { url: string; name?: string; format_ps?: string }) =>
       ipcRenderer.invoke("db:teams:importPokepaste", args),
+    
+    listTeams: () => ipcRenderer.invoke("db:teams:list") as Promise<TeamListRow[]>,
+
+    deleteTeam: (teamId: string) => {
+      ipcRenderer.invoke("db:teams:delete", teamId);
+    },
+
+    getDetails: (teamId: string) =>
+      ipcRenderer.invoke("db:teams:getDetails", teamId),
   },
 });

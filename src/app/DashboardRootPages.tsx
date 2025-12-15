@@ -1,9 +1,9 @@
 // src/pages/DashboardRootPage.tsx
 import { useState } from "react";
 import { DashboardShell } from "../layout/DashboardShell";
-import KpiCardsRow from "../ui/KpiCardsRow";
-import FixLeakModal from "../features/coaching/FixLeakModal";
-import { TeamsPage } from "./TeamsPage";
+import KpiCardsRow from "../shared/ui/KpiCardsRow";
+import FixLeakModal from "../features/coaching/ui/FixLeakModal";
+import { TeamsPage } from "../pages/teams/TeamsPage";
 
 function DashboardMain() {
   const [activeLeak, setActiveLeak] = useState<string | null>(null);

@@ -1,3 +1,6 @@
+import { DeleteTeamResult } from "../features/model/teams.types";
+import { TeamListRow } from "../features/teams/TeamsView";
+
 export {};
 
 type ImportTeamArgs = {
@@ -15,10 +18,13 @@ type ImportTeamResult = {
 
 declare global {
   interface Window {
+    __toast?: (message: string, type: "success" | "error") => void,
     api: {
       teams: {
         importPokepaste: (args: ImportTeamArgs) => Promise<ImportTeamResult>;
-        // add more endpoints here as you expose them
+        listTeams: () => Promise<TeamListRow[]>;
+        deleteTeam: (teamId: string) => Promise<DeleteTeamResult>;
+        getDetails: (teamId: string) => Promise<TeamDetails>;
       };
     };
   }
