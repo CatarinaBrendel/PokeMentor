@@ -22,7 +22,6 @@ electron.contextBridge.exposeInMainWorld("ipcRenderer", {
 });
 electron.contextBridge.exposeInMainWorld("api", {
   teams: {
-    list: () => electron.ipcRenderer.invoke("db:teams:list"),
-    insert: (team) => electron.ipcRenderer.invoke("db:teams:insert", team)
+    importPokepaste: (args) => electron.ipcRenderer.invoke("db:teams:importPokepaste", args)
   }
 });

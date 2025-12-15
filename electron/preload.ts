@@ -1,5 +1,4 @@
 import { ipcRenderer, contextBridge } from 'electron'
-import { TeamInput, TeamRow, TeamInsertResult } from './ipc'
 
 // --------- Expose some API to the Renderer process ---------
 contextBridge.exposeInMainWorld('ipcRenderer', {
@@ -25,11 +24,9 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
 })
 
 // --------- High-level PokéMentor API ---------
-// electron/preload.ts
 contextBridge.exposeInMainWorld("api", {
   teams: {
-    list: (): Promise<TeamRow[]> => ipcRenderer.invoke("db:teams:list"),
-    insert: (team: TeamInput): Promise<TeamInsertResult> =>
-      ipcRenderer.invoke("db:teams:insert", team),
+    importPokepaste: (args: { url: string; name?: string; format_ps?: string }) =>
+      ipcRenderer.invoke("db:teams:importPokepaste", args),
   },
 });
