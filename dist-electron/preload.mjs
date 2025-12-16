@@ -25,6 +25,7 @@ electron.contextBridge.exposeInMainWorld("api", {
     deleteTeam: (teamId) => electron.ipcRenderer.invoke("db:teams:delete", teamId),
     getDetails: (teamId) => electron.ipcRenderer.invoke("db:teams:getDetails", teamId),
     setTeamActive: (teamId) => electron.ipcRenderer.invoke("db:teams:setTeamActive", teamId),
-    getActiveSummary: () => electron.ipcRenderer.invoke("db:teams:getActiveSummary")
+    getActiveSummary: () => electron.ipcRenderer.invoke("db:teams:getActiveSummary"),
+    getActiveActivity: () => electron.ipcRenderer.invoke("db:teams:getActiveActivity")
   }
 });

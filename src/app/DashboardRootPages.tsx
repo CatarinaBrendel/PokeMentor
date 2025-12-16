@@ -3,10 +3,13 @@ import { DashboardShell, NavKey } from "../layout/DashboardShell";
 import KpiCardsRow from "../shared/ui/KpiCardsRow";
 import FixLeakModal from "../features/coaching/ui/FixLeakModal";
 import { TeamsPage } from "../pages/teams/TeamsPage";
+import { BattlesPage } from "../pages/battles/BattlesPage"
 import ActiveTeamCard from "../shared/ui/ActiveTreamCard";
 import { TeamsApi } from "../features/teams/api/teams.api";
 import type { TeamListRow } from "../features/teams/ui/TeamsView";
 import { usePersistedState } from "../shared/hooks/usePersistedState";
+import { ActiveTeamActivity } from "../features/teams/model/teams.types";
+import ActiveTeamActivityCard from "../shared/ui/ActiveTeamActivityCard"
 
 function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void }) {
   const [activeLeak, setActiveLeak] = useState<string | null>(null);
@@ -14,6 +17,8 @@ function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void })
   const [activeTeam, setActiveTeam] = useState<TeamListRow | null>(null);
   const [activeTeamLoading, setActiveTeamLoading] = useState(false);
   const [activeTeamError, setActiveTeamError] = useState<string | null>(null);
+
+  const [activeActivity, setActiveActivity] = useState<ActiveTeamActivity | null>(null);
 
   const [, setSelectedTeamId] = usePersistedState<string | null>(
     "teams.selectedTeamId",
@@ -26,10 +31,11 @@ function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void })
     setActiveTeamLoading(true);
     setActiveTeamError(null);
 
-    TeamsApi.getActiveSummary()
-      .then((t) => {
+    TeamsApi.getActiveActivity()
+      .then((a) => {
         if (cancelled) return;
-        setActiveTeam(t);
+        setActiveActivity(a);
+        setActiveTeam(a.activeTeam);
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -77,6 +83,13 @@ function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void })
           onOpenTeams={openTeams}
           onOpenTeam={openActiveTeam}
         />
+        
+        <ActiveTeamActivityCard
+          activity={activeActivity}
+          onOpenLastBattle={() => {
+            window.__toast?.("Battle reviews are coming soon.", "success");
+          }}
+        />
       </div>
 
       <FixLeakModal
@@ -104,7 +117,7 @@ export default function DashboardRootPage() {
     ),
     teams: <TeamsPage initialOpenTeamId={openTeamId} />,
     live: <div className="p-8">Live Coaching (todo)</div>,
-    reviews: <div className="p-8">Battle Reviews (todo)</div>,
+    reviews: <BattlesPage />,
     paths: <div className="p-8">Learning Paths (todo)</div>,
     practice: <div className="p-8">Practice Scenarios (todo)</div>,
     pokedex: <div className="p-8">Pokedex (todo)</div>,

@@ -103,3 +103,10 @@ export type TeamDetails = {
   slots: TeamSlotWithSetRow[];
 };
 
+export type ActiveTeamActivity = {
+  activeTeam: TeamListRow | null;
+  last_import_at: string | null;
+  last_battle_at: string | null;
+  total_battles: number;
+};
+

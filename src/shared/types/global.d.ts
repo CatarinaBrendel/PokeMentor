@@ -27,6 +27,7 @@ declare global {
         getDetails: (teamId: string) => Promise<TeamDetails>;
         setTeamActive: (teamId: string) => Promise <{ok: true}>
         getActiveSummary: () => Promise<TeamListRow | null>;
+        getActiveActivity: () => Promise<ActiveTeamActivity>;
       };
     };
   }

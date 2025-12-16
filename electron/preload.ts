@@ -41,5 +41,8 @@ contextBridge.exposeInMainWorld("api", {
 
     getActiveSummary: () =>
       ipcRenderer.invoke("db:teams:getActiveSummary"),
+
+    getActiveActivity: () => ipcRenderer.invoke("db:teams:getActiveActivity"),
+    
   },
 });

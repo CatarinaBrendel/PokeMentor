@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { TeamListRow } from "../../features/teams/model/teams.types";
+import {DASHBOARD_CARD} from "./CardBase"
 
 function cx(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
@@ -19,7 +20,7 @@ export default function ActiveTeamCard({
   onOpenTeam: (teamId: string) => void;
 }) {
   return (
-    <div className="rounded-3xl bg-dust-100 p-6 ring-1 ring-black/5">
+    <div className={DASHBOARD_CARD}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-semibold text-dust-900">Active Team

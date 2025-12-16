@@ -1,6 +1,6 @@
 import { getDb } from "../../../db/index";
 import { teamsQueries } from "../teams/teams";
-import type { TeamListRow } from "../../queries/teams/teams.types";
+import type { TeamListRow, ActiveTeamActivity } from "../../queries/teams/teams.types";
 
 export function listTeams(): TeamListRow[] {
   const db = getDb();
@@ -15,3 +15,8 @@ export function setTeamActive(teamId: string): { ok: true } {
 
   return { ok: true };
 } 
+
+export function getActiveTeamActivity(): ActiveTeamActivity {
+  const db = getDb();
+  return teamsQueries(db).getActiveTeamActivity();
+}

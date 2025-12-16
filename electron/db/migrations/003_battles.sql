@@ -67,3 +67,6 @@ CREATE TABLE IF NOT EXISTS battle_player_pokemon (
 
 CREATE INDEX IF NOT EXISTS idx_battle_players_battle ON battle_players(battle_id);
 CREATE INDEX IF NOT EXISTS idx_bpp_player ON battle_player_pokemon(battle_player_id);
+CREATE INDEX IF NOT EXISTS idx_btl_team_version ON battle_team_links(team_version_id);
+CREATE INDEX IF NOT EXISTS idx_btl_battle ON battle_team_links(battle_id);
+CREATE INDEX IF NOT EXISTS idx_team_versions_teamid ON team_versions(team_id);

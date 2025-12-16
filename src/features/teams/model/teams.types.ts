@@ -92,3 +92,10 @@ export type TeamListRow = {
   latest_version_num: number | null;
   is_active: number | null;
 };
+
+export type ActiveTeamActivity = {
+  activeTeam: TeamListRow | null;
+  last_import_at: string | null;
+  last_battle_at: string | null;
+  total_battles: number;
+};

@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { TeamDetails, TeamSlotWithSetRow } from "./teams.types"; // adjust path if needed
+import TeamSpriteStrip from "../../pokemon/ui/TeamSpriteStrip";
 
 type Props = {
   data: TeamDetails;
@@ -159,6 +160,16 @@ function PokemonSlotCard({
         id={headerId}
       >
         <div className="flex items-start justify-between gap-3">
+        {/* Left: sprite + text */}
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="shrink-0 pt-0.5">
+            <TeamSpriteStrip
+              mons={[{ species: s.species_name }]}
+              size="md"
+              className="!mt-0"
+            />
+          </div>
+
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <div className="text-[11px] font-medium text-dust-500">
@@ -174,27 +185,29 @@ function PokemonSlotCard({
               {s.nickname ?? s.species_name}
             </div>
           </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            {s.tera_type ? (
-              <span className="rounded-full bg-dust-100 px-2 py-1 text-[11px] text-dust-700">
-                Tera {s.tera_type}
-              </span>
-            ) : null}
-
-            <span
-              className={cx(
-                "inline-flex items-center justify-center",
-                "h-7 w-7 rounded-lg ring-1 ring-black/5",
-                "text-dust-700 bg-dust-50"
-              )}
-              aria-hidden="true"
-              title={expanded ? "Collapse" : "Expand"}
-            >
-              {expanded ? "▾" : "▸"}
-            </span>
-          </div>
         </div>
+
+        {/* Right: tera + chevron */}
+        <div className="flex items-center gap-2 shrink-0">
+          {s.tera_type ? (
+            <span className="rounded-full bg-dust-100 px-2 py-1 text-[11px] text-dust-700">
+              Tera {s.tera_type}
+            </span>
+          ) : null}
+
+          <span
+            className={cx(
+              "inline-flex items-center justify-center",
+              "h-7 w-7 rounded-lg ring-1 ring-black/5",
+              "text-dust-700 bg-dust-50"
+            )}
+            aria-hidden="true"
+            title={expanded ? "Collapse" : "Expand"}
+          >
+            {expanded ? "▾" : "▸"}
+          </span>
+        </div>
+      </div>
 
         {/* Meta strip (always visible) */}
         <div className="mt-2 text-xs text-dust-600 space-y-1">
@@ -288,7 +301,10 @@ function PokemonSlotCard({
 
 export default function TeamDetailsPanel({ data, onClose, onSetActive }: Props) {
   const { team, latestVersion, slots } = data;
-
+  const teamMons = React.useMemo(
+    () => slots.map((s) => ({ species: s.species_name })),
+    [slots]
+  );
 
   // Track expanded state by pokemon_set_id (more stable than slot_index if you ever reorder)
   const [expandedById, setExpandedById] = React.useState<Record<string, boolean>>(

@@ -212,21 +212,41 @@ function teamsQueries(db2) {
     UPDATE teams SET is_active = 1
     WHERE id = @team_id
   `);
+  const getActiveTeamIdStmt = db2.prepare(`
+    SELECT id
+    FROM teams
+    WHERE is_active = 1
+    LIMIT 1
+  `);
   const getActiveTeamSummaryStmt = db2.prepare(`
-      SELECT
-        t.id,
-        t.name,
-        t.format_ps,
-        t.updated_at,
-        t.is_active,
-        (
-          SELECT MAX(tv.version_num)
-          FROM team_versions tv
-          WHERE tv.team_id = t.id
-        ) AS latest_version_num
-      FROM teams t
-      WHERE t.is_active = 1
-      LIMIT 1
+    SELECT
+      t.id,
+      t.name,
+      t.format_ps,
+      t.updated_at,
+      t.is_active,
+      (
+        SELECT MAX(tv.version_num)
+        FROM team_versions tv
+        WHERE tv.team_id = t.id
+      ) AS latest_version_num
+    FROM teams t
+    WHERE t.id = @team_id
+    LIMIT 1
+  `);
+  const getLastImportStmt = db2.prepare(`
+    SELECT MAX(created_at) AS last_import_at
+    FROM team_versions
+    WHERE team_id = @team_id
+  `);
+  const getBattleActivityStmt = db2.prepare(`
+    SELECT
+      COUNT(DISTINCT b.id) AS total_battles,
+      MAX(COALESCE(b.played_at, b.created_at)) AS last_battle_at
+    FROM battle_team_links btl
+    JOIN team_versions tv ON tv.id = btl.team_version_id
+    JOIN battles b ON b.id = btl.battle_id
+    WHERE tv.team_id = @team_id
   `);
   function getMovesForSetIds(setIds) {
     if (setIds.length === 0) return [];
@@ -325,6 +345,26 @@ function teamsQueries(db2) {
     getActiveTeamSummary() {
       const row = getActiveTeamSummaryStmt.get();
       return row ?? null;
+    },
+    getActiveTeamActivity() {
+      const active = getActiveTeamIdStmt.get();
+      if (!(active == null ? void 0 : active.id)) {
+        return {
+          activeTeam: null,
+          last_import_at: null,
+          last_battle_at: null,
+          total_battles: 0
+        };
+      }
+      const activeTeam = getActiveTeamSummaryStmt.get({ team_id: active.id });
+      const lastImportRow = getLastImportStmt.get({ team_id: active.id });
+      const battleRow = getBattleActivityStmt.get({ team_id: active.id });
+      return {
+        activeTeam,
+        last_import_at: (lastImportRow == null ? void 0 : lastImportRow.last_import_at) ?? null,
+        last_battle_at: (battleRow == null ? void 0 : battleRow.last_battle_at) ?? null,
+        total_battles: (battleRow == null ? void 0 : battleRow.total_battles) ?? 0
+      };
     }
   };
 }
@@ -607,6 +647,10 @@ function setTeamActive(teamId) {
   q.setActiveTeam(teamId);
   return { ok: true };
 }
+function getActiveTeamActivity() {
+  const db2 = getDb();
+  return teamsQueries(db2).getActiveTeamActivity();
+}
 function deleteTeam(teamId) {
   const db2 = getDb();
   const q = teamsQueries(db2);
@@ -649,6 +693,9 @@ function registerDbHandlers() {
   ipcMain.handle("db:teams:getActiveSummary", () => {
     return getActiveTeamSummary();
   });
+  ipcMain.handle("db:teams:getActiveActivity", () => {
+    return getActiveTeamActivity();
+  });
 }
 const __filename$1 = fileURLToPath(import.meta.url);
 const __dirname$1 = dirname(__filename$1);
@@ -661,9 +708,9 @@ let win = null;
 function createWindow() {
   win = new BrowserWindow({
     width: 1380,
-    height: 800,
+    height: 860,
     minWidth: 1280,
-    minHeight: 720,
+    minHeight: 840,
     icon: path.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
     webPreferences: {
       preload: path.join(__dirname$1, "preload.mjs"),

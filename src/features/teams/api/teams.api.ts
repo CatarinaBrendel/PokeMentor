@@ -1,4 +1,4 @@
-import type { ImportTeamArgs, DeleteTeamResult, TeamDetails, TeamListRow } from "../model/teams.types";
+import type { ImportTeamArgs, DeleteTeamResult, TeamDetails, TeamListRow, ActiveTeamActivity } from "../model/teams.types";
 
 export const TeamsApi = {
   importPokepaste: (args: ImportTeamArgs) =>
@@ -18,5 +18,7 @@ export const TeamsApi = {
 
   getActiveSummary: (): Promise<TeamListRow | null> =>
     window.api.teams.getActiveSummary(),
+
+  getActiveActivity: () => window.api.teams.getActiveActivity() as Promise<ActiveTeamActivity>,
 
 };

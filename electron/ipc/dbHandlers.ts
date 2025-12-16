@@ -1,7 +1,7 @@
 // electron/ipc/dbHandlers.ts
 import { ipcMain } from "electron";
 import { importTeamFromPokepaste } from "../db/queries/teams/importPokepaste";
-import { listTeams, setTeamActive } from "../db/queries/teams/listTeams";
+import { listTeams, setTeamActive, getActiveTeamActivity } from "../db/queries/teams/listTeams";
 import { deleteTeam } from "../db/queries/teams/deleteTeam";
 import { getTeamDetails,  getActiveTeamSummary } from "../db/queries/teams/getTeamDetails";
 
@@ -38,5 +38,9 @@ export function registerDbHandlers() {
 
     ipcMain.handle("db:teams:getActiveSummary", () => {
       return getActiveTeamSummary();
+    });
+
+    ipcMain.handle("db:teams:getActiveActivity", () => {
+      return getActiveTeamActivity();
     });
 }

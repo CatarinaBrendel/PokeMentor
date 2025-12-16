@@ -8,6 +8,7 @@ import type {
   TeamHeaderRow,
   TeamVersionRow,
   TeamSlotWithSetRow,
+  ActiveTeamActivity,
 } from "./teams.types";
 
 type RowId = { id: string };
@@ -177,21 +178,44 @@ export function teamsQueries(db: BetterSqlite3.Database) {
     WHERE id = @team_id
   `);
 
+  const getActiveTeamIdStmt = db.prepare(`
+    SELECT id
+    FROM teams
+    WHERE is_active = 1
+    LIMIT 1
+  `);
+
   const getActiveTeamSummaryStmt = db.prepare(`
-      SELECT
-        t.id,
-        t.name,
-        t.format_ps,
-        t.updated_at,
-        t.is_active,
-        (
-          SELECT MAX(tv.version_num)
-          FROM team_versions tv
-          WHERE tv.team_id = t.id
-        ) AS latest_version_num
-      FROM teams t
-      WHERE t.is_active = 1
-      LIMIT 1
+    SELECT
+      t.id,
+      t.name,
+      t.format_ps,
+      t.updated_at,
+      t.is_active,
+      (
+        SELECT MAX(tv.version_num)
+        FROM team_versions tv
+        WHERE tv.team_id = t.id
+      ) AS latest_version_num
+    FROM teams t
+    WHERE t.id = @team_id
+    LIMIT 1
+  `);
+
+  const getLastImportStmt = db.prepare(`
+    SELECT MAX(created_at) AS last_import_at
+    FROM team_versions
+    WHERE team_id = @team_id
+  `);
+
+  const getBattleActivityStmt = db.prepare(`
+    SELECT
+      COUNT(DISTINCT b.id) AS total_battles,
+      MAX(COALESCE(b.played_at, b.created_at)) AS last_battle_at
+    FROM battle_team_links btl
+    JOIN team_versions tv ON tv.id = btl.team_version_id
+    JOIN battles b ON b.id = btl.battle_id
+    WHERE tv.team_id = @team_id
   `);
 
   function getMovesForSetIds(setIds: string[]): SetMoveRow[] {
@@ -321,6 +345,35 @@ export function teamsQueries(db: BetterSqlite3.Database) {
     getActiveTeamSummary(): TeamListRow | null {
       const row = getActiveTeamSummaryStmt.get() as TeamListRow | undefined;
       return row ?? null;
+    },
+
+    getActiveTeamActivity(): ActiveTeamActivity {
+      const active = getActiveTeamIdStmt.get() as { id: string } | undefined;
+      if (!active?.id) {
+        return {
+          activeTeam: null,
+          last_import_at: null,
+          last_battle_at: null,
+          total_battles: 0,
+        };
+      }
+
+      const activeTeam = getActiveTeamSummaryStmt.get({ team_id: active.id }) as TeamListRow;
+
+      const lastImportRow = getLastImportStmt.get({ team_id: active.id }) as
+        | { last_import_at: string | null }
+        | undefined;
+
+      const battleRow = getBattleActivityStmt.get({ team_id: active.id }) as
+        | { total_battles: number | null; last_battle_at: string | null }
+        | undefined;
+
+      return {
+        activeTeam,
+        last_import_at: lastImportRow?.last_import_at ?? null,
+        last_battle_at: battleRow?.last_battle_at ?? null,
+        total_battles: battleRow?.total_battles ?? 0,
+      };
     },
 
   };
