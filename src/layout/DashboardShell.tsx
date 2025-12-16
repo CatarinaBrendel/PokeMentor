@@ -15,6 +15,8 @@ export type NavKey =
 
 type Props = {
   pages: Record<NavKey, React.ReactNode>;
+  activePage?: NavKey;
+  onNavigate?: (page: NavKey) => void;
 };
 
 function isNavKey(v: unknown): v is NavKey {
@@ -30,20 +32,27 @@ function isNavKey(v: unknown): v is NavKey {
   );
 }
 
-export function DashboardShell({ pages }: Props) {
+export function DashboardShell({ pages, activePage, onNavigate }: Props) {
   const [collapsed, setCollapsed] = usePersistedState<boolean>(
     "pm.sidebar.collapsed",
     false
   );
 
-  const [active, setActiveRaw] = usePersistedState<NavKey>(
+  const [activePersisted, setActivePersisted] = usePersistedState<NavKey>(
     "pm.sidebar.active",
     "dashboard"
   );
 
-  // Guard against stale values if NavKey changes later
-  const activeSafe: NavKey = isNavKey(active) ? active : "dashboard";
-  const setActive = (k: NavKey) => setActiveRaw(k);
+  const persistedSafe: NavKey = isNavKey(activePersisted) ? activePersisted : "dashboard";
+
+  // If parent controls activePage, use it; otherwise use persisted.
+  const activeSafe: NavKey = activePage ?? persistedSafe;
+
+  function setActive(next: NavKey) {
+    // Always keep persisted value in sync (useful even in controlled mode)
+    setActivePersisted(next);
+    onNavigate?.(next);
+  }
 
   return (
     <div className="h-screen w-screen overflow-hidden bg-dust-50 text-dust-900">

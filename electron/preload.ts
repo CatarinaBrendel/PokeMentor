@@ -38,5 +38,8 @@ contextBridge.exposeInMainWorld("api", {
 
     setTeamActive: (teamId: string) =>
       ipcRenderer.invoke("db:teams:setTeamActive", teamId),
+
+    getActiveSummary: () =>
+      ipcRenderer.invoke("db:teams:getActiveSummary"),
   },
 });

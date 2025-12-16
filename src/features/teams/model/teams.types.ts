@@ -83,3 +83,12 @@ export type TeamDetails = {
   latestVersion: TeamVersionRow | null;   // null if no versions exist
   slots: TeamSlotWithSetRow[];            // empty if no version
 };
+
+export type TeamListRow = {
+  id: string;
+  name: string | null;
+  format_ps: string | null;
+  updated_at: string;
+  latest_version_num: number | null;
+  is_active: number | null;
+};

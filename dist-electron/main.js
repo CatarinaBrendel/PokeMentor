@@ -212,6 +212,22 @@ function teamsQueries(db2) {
     UPDATE teams SET is_active = 1
     WHERE id = @team_id
   `);
+  const getActiveTeamSummaryStmt = db2.prepare(`
+      SELECT
+        t.id,
+        t.name,
+        t.format_ps,
+        t.updated_at,
+        t.is_active,
+        (
+          SELECT MAX(tv.version_num)
+          FROM team_versions tv
+          WHERE tv.team_id = t.id
+        ) AS latest_version_num
+      FROM teams t
+      WHERE t.is_active = 1
+      LIMIT 1
+  `);
   function getMovesForSetIds(setIds) {
     if (setIds.length === 0) return [];
     const ids = Array.from(new Set(setIds));
@@ -305,6 +321,10 @@ function teamsQueries(db2) {
           throw new Error(`setActiveTeam: team not found: ${team_id}`);
         }
       })();
+    },
+    getActiveTeamSummary() {
+      const row = getActiveTeamSummaryStmt.get();
+      return row ?? null;
     }
   };
 }
@@ -598,6 +618,10 @@ function getTeamDetails(teamId) {
   const q = teamsQueries(db2);
   return q.getTeamDetails(teamId);
 }
+function getActiveTeamSummary() {
+  const db2 = getDb();
+  return teamsQueries(db2).getActiveTeamSummary();
+}
 ipcMain.removeHandler("db:teams:importPokepaste");
 ipcMain.removeHandler("db:teams:list");
 function registerDbHandlers() {
@@ -621,6 +645,9 @@ function registerDbHandlers() {
   });
   ipcMain.handle("db:teams:setTeamActive", (_evt, teamId) => {
     return setTeamActive(teamId);
+  });
+  ipcMain.handle("db:teams:getActiveSummary", () => {
+    return getActiveTeamSummary();
   });
 }
 const __filename$1 = fileURLToPath(import.meta.url);

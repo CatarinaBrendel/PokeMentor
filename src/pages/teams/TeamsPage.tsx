@@ -7,16 +7,15 @@ import { usePersistedState } from "../../shared/hooks/usePersistedState";
 import type { TeamDetails } from "../../features/teams/model/teams.types";
 import TeamDetailsPanel from "../../features/teams/ui/TeamDetailsPanel";
 
-export function TeamsPage() {
+export function TeamsPage({ initialOpenTeamId }: { initialOpenTeamId?: string | null }) {
   const [tab, setTab] = usePersistedState<TeamsTab>("teams.tab", "import");
-
+  const [selectedTeamId, setSelectedTeamId] = React.useState<string | null>(null);
+  const [details, setDetails] = React.useState<TeamDetails | null>(null);
   const [rows, setRows] = React.useState<TeamListRow[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [listError, setListError] = React.useState<string | null>(null);
   const [detailsError, setDetailsError] = React.useState<string | null>(null);
 
-  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
-  const [details, setDetails] = useState<TeamDetails | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
 
   const listReqId = React.useRef(0);
@@ -104,7 +103,7 @@ export function TeamsPage() {
         if (reqId !== detailsReqId.current) return;
         setDetailsError(e instanceof Error ? e.message : "Failed to load team details.");
       } finally {
-        if (reqId !== detailsReqId.current) {
+        if (reqId === detailsReqId.current) {
           setDetailsLoading(false);
         }
       }
@@ -120,6 +119,23 @@ export function TeamsPage() {
       setDetails(null);
     }
   }, [tab, loadTeams]);
+
+  useEffect(() => {
+    if (!initialOpenTeamId) return;
+
+    // Always land in list
+    setTab("list");
+
+    // Force selection (opens panel)
+    setSelectedTeamId(initialOpenTeamId);
+
+    // Clear stale errors
+    setDetailsError(null);
+    setListError(null);
+
+    // Ensure list is loaded so the table shows immediately
+    void loadTeams();
+  }, [initialOpenTeamId, setTab, loadTeams]);
 
   return (
     <div className="w-full p-8 space-y-6">
@@ -145,8 +161,11 @@ export function TeamsPage() {
               <TeamDetailsPanel
                 data={details}
                 onClose={() => {
+                  detailsReqId.current += 1;
                   setSelectedTeamId(null);
+                  setDetails(null);
                   setDetailsError(null);
+                  setDetailsLoading(false);
                 }}
                 onSetActive={handleSetActiveTeam}
               />

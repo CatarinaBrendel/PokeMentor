@@ -3,7 +3,7 @@ import { ipcMain } from "electron";
 import { importTeamFromPokepaste } from "../db/queries/teams/importPokepaste";
 import { listTeams, setTeamActive } from "../db/queries/teams/listTeams";
 import { deleteTeam } from "../db/queries/teams/deleteTeam";
-import { getTeamDetails } from "../db/queries/teams/getTeamDetails";
+import { getTeamDetails,  getActiveTeamSummary } from "../db/queries/teams/getTeamDetails";
 
 ipcMain.removeHandler("db:teams:importPokepaste");
 ipcMain.removeHandler("db:teams:list");
@@ -34,5 +34,9 @@ export function registerDbHandlers() {
 
     ipcMain.handle("db:teams:setTeamActive", (_evt, teamId: string) => {
       return setTeamActive(teamId);
+    });
+
+    ipcMain.handle("db:teams:getActiveSummary", () => {
+      return getActiveTeamSummary();
     });
 }

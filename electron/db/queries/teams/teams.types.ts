@@ -103,5 +103,3 @@ export type TeamDetails = {
   slots: TeamSlotWithSetRow[];
 };
 
-
-

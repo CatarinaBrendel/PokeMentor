@@ -177,6 +177,23 @@ export function teamsQueries(db: BetterSqlite3.Database) {
     WHERE id = @team_id
   `);
 
+  const getActiveTeamSummaryStmt = db.prepare(`
+      SELECT
+        t.id,
+        t.name,
+        t.format_ps,
+        t.updated_at,
+        t.is_active,
+        (
+          SELECT MAX(tv.version_num)
+          FROM team_versions tv
+          WHERE tv.team_id = t.id
+        ) AS latest_version_num
+      FROM teams t
+      WHERE t.is_active = 1
+      LIMIT 1
+  `);
+
   function getMovesForSetIds(setIds: string[]): SetMoveRow[] {
     if (setIds.length === 0) return [];
 
@@ -299,6 +316,11 @@ export function teamsQueries(db: BetterSqlite3.Database) {
           throw new Error(`setActiveTeam: team not found: ${team_id}`);
         }
       })();
+    },
+
+    getActiveTeamSummary(): TeamListRow | null {
+      const row = getActiveTeamSummaryStmt.get() as TeamListRow | undefined;
+      return row ?? null;
     },
 
   };
