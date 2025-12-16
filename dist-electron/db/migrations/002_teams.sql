@@ -65,3 +65,21 @@ CREATE TABLE IF NOT EXISTS team_slots (
 CREATE INDEX IF NOT EXISTS idx_team_versions_team ON team_versions(team_id);
 CREATE INDEX IF NOT EXISTS idx_team_slots_set ON team_slots(pokemon_set_id);
 CREATE INDEX IF NOT EXISTS idx_set_hash ON pokemon_sets(set_hash);
+
+-- Stores Moves in a different table (scalable)
+CREATE TABLE IF NOT EXISTS moves (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  UNIQUE(name COLLATE NOCASE)
+);
+
+CREATE TABLE IF NOT EXISTS pokemon_set_moves (
+  pokemon_set_id TEXT NOT NULL REFERENCES pokemon_sets(id) ON DELETE CASCADE,
+  move_slot INTEGER NOT NULL CHECK(move_slot BETWEEN 1 AND 4),
+  move_id INTEGER NOT NULL REFERENCES moves(id),
+  PRIMARY KEY (pokemon_set_id, move_slot)
+);
+
+CREATE INDEX IF NOT EXISTS idx_moves_name_nocase ON moves(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_psm_set ON pokemon_set_moves(pokemon_set_id);
+CREATE INDEX IF NOT EXISTS idx_psm_move ON pokemon_set_moves(move_id);

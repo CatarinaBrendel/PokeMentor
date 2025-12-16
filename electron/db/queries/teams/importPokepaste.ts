@@ -341,6 +341,18 @@ export async function importTeamFromPokepaste(args: ImportArgs): Promise<ImportT
           set_hash,
           now,
         });
+
+        // Insert moves (slot order 1..4)
+        for (let i = 0; i < Math.min(s.moves.length, 4); i++) {
+          const moveName = s.moves[i]?.trim();
+          if (!moveName) continue;
+          const move_id = q.getOrCreateMoveId(moveName);
+          q.insertPokemonSetMove({
+            pokemon_set_id,
+            move_slot: i + 1,
+            move_id,
+          });
+        }
       }
 
       q.insertTeamSlot({ team_version_id: version_id, slot_index: slotIndex, pokemon_set_id });

@@ -190,6 +190,36 @@ function teamsQueries(db2) {
     WHERE ts.team_version_id = ?
     ORDER BY ts.slot_index ASC
   `);
+  const selectMoveByNameStmt = db2.prepare(`
+    SELECT id
+    FROM moves
+    WHERE name = @name COLLATE NOCASE
+    LIMIT 1
+  `);
+  const insertMoveStmt = db2.prepare(`
+    INSERT INTO moves (name)
+    VALUES (@name)
+  `);
+  const insertSetMoveStmt = db2.prepare(`
+    INSERT INTO pokemon_set_moves (pokemon_set_id, move_slot, move_id)
+    VALUES (@pokemon_set_id, @move_slot, @move_id)
+  `);
+  function getMovesForSetIds(setIds) {
+    if (setIds.length === 0) return [];
+    const ids = Array.from(new Set(setIds));
+    const placeholders = ids.map(() => "?").join(", ");
+    const stmt = db2.prepare(`
+      SELECT
+        psm.pokemon_set_id,
+        psm.move_slot,
+        m.name
+      FROM pokemon_set_moves psm
+      JOIN moves m ON m.id = psm.move_id
+      WHERE psm.pokemon_set_id IN (${placeholders})
+      ORDER BY psm.pokemon_set_id ASC, psm.move_slot ASC
+    `);
+    return stmt.all(...ids);
+  }
   return {
     insertTeam(args) {
       insertTeamStmt.run(args);
@@ -219,12 +249,45 @@ function teamsQueries(db2) {
         throw new Error("Team not found");
       }
       const latestVersion = getLatestVersionStmt.get(teamId) ?? null;
-      const slots = latestVersion ? getSlotsForVersionStmt.all(latestVersion.id) : [];
+      const slotsBase = latestVersion ? getSlotsForVersionStmt.all(latestVersion.id) : [];
+      let slots = [];
+      if (slotsBase.length === 0) {
+        slots = [];
+      } else {
+        const ids = Array.from(new Set(slotsBase.map((s) => s.pokemon_set_id)));
+        const rows = getMovesForSetIds(ids);
+        const movesBySetId = /* @__PURE__ */ new Map();
+        for (const r of rows) {
+          const arr = movesBySetId.get(r.pokemon_set_id) ?? [];
+          arr.push(r.name);
+          movesBySetId.set(r.pokemon_set_id, arr);
+        }
+        slots = slotsBase.map((s) => ({
+          ...s,
+          moves: movesBySetId.get(s.pokemon_set_id) ?? []
+        }));
+      }
       return {
         team,
         latestVersion,
         slots
       };
+    },
+    getOrCreateMoveId(name) {
+      const trimmed = name.trim();
+      if (!trimmed) throw new Error("Move name is empty.");
+      const found = selectMoveByNameStmt.get({ name: trimmed });
+      if (found == null ? void 0 : found.id) return found.id;
+      try {
+        insertMoveStmt.run({ name: trimmed });
+      } catch (e) {
+      }
+      const row = selectMoveByNameStmt.get({ name: trimmed });
+      if (!(row == null ? void 0 : row.id)) throw new Error(`Failed to create move: ${trimmed}`);
+      return row.id;
+    },
+    insertPokemonSetMove(args) {
+      insertSetMoveStmt.run(args);
     }
   };
 }
@@ -425,6 +488,7 @@ async function importTeamFromPokepaste(args) {
   const db2 = getDb();
   const q = teamsQueries(db2);
   return db2.transaction(() => {
+    var _a2;
     const team_id = randomUUID();
     const version_id = randomUUID();
     const version_num = 1;
@@ -474,6 +538,16 @@ async function importTeamFromPokepaste(args) {
           set_hash,
           now
         });
+        for (let i = 0; i < Math.min(s.moves.length, 4); i++) {
+          const moveName = (_a2 = s.moves[i]) == null ? void 0 : _a2.trim();
+          if (!moveName) continue;
+          const move_id = q.getOrCreateMoveId(moveName);
+          q.insertPokemonSetMove({
+            pokemon_set_id,
+            move_slot: i + 1,
+            move_id
+          });
+        }
       }
       q.insertTeamSlot({ team_version_id: version_id, slot_index: slotIndex, pokemon_set_id });
       slotIndex += 1;

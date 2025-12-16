@@ -80,8 +80,8 @@ export type TeamSlotWithSetRow = {
   ability_name: string | null;
 
   level: number | null;
-  gender: string | null; // stored as TEXT in DB
-  shiny: number;         // 0/1
+  gender: string | null;
+  shiny: number;
   tera_type: string | null;
   happiness: number | null;
   nature: string | null;
@@ -91,6 +91,8 @@ export type TeamSlotWithSetRow = {
 
   iv_hp: number | null; iv_atk: number | null; iv_def: number | null;
   iv_spa: number | null; iv_spd: number | null; iv_spe: number | null;
+
+  moves: string[]; // NEW
 };
 
 export type TeamDetails = {
@@ -98,5 +100,6 @@ export type TeamDetails = {
   latestVersion: TeamVersionRow | null;
   slots: TeamSlotWithSetRow[];
 };
+
 
 

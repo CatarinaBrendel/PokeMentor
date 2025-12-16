@@ -58,30 +58,23 @@ export type TeamSlotWithSetRow = {
 
   nickname: string | null;
   species_name: string;
-
   item_name: string | null;
   ability_name: string | null;
 
   level: number | null;
-  gender: "M" | "F" | null;
+  gender: string | null;
   shiny: number;
   tera_type: string | null;
   happiness: number | null;
   nature: string | null;
 
-  ev_hp: number | null;
-  ev_atk: number | null;
-  ev_def: number | null;
-  ev_spa: number | null;
-  ev_spd: number | null;
-  ev_spe: number | null;
+  ev_hp: number | null; ev_atk: number | null; ev_def: number | null;
+  ev_spa: number | null; ev_spd: number | null; ev_spe: number | null;
 
-  iv_hp: number | null;
-  iv_atk: number | null;
-  iv_def: number | null;
-  iv_spa: number | null;
-  iv_spd: number | null;
-  iv_spe: number | null;
+  iv_hp: number | null; iv_atk: number | null; iv_def: number | null;
+  iv_spa: number | null; iv_spd: number | null; iv_spe: number | null;
+
+  moves: string[];
 };
 
 // The payload returned by db:teams:getDetails

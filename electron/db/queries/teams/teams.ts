@@ -12,6 +12,14 @@ import type {
 
 type RowId = { id: string };
 
+type MoveRowId = { id: number }
+
+type SetMoveRow = {
+  pokemon_set_id: string;
+  move_slot: number;
+  name: string;
+};
+
 /**
  * Queries for Teams domain.
  * This file MUST NOT fetch Pokepaste or parse text.
@@ -142,6 +150,43 @@ export function teamsQueries(db: BetterSqlite3.Database) {
     ORDER BY ts.slot_index ASC
   `);
 
+  const selectMoveByNameStmt = db.prepare(`
+    SELECT id
+    FROM moves
+    WHERE name = @name COLLATE NOCASE
+    LIMIT 1
+  `);
+
+  const insertMoveStmt = db.prepare(`
+    INSERT INTO moves (name)
+    VALUES (@name)
+  `);
+
+  const insertSetMoveStmt = db.prepare(`
+    INSERT INTO pokemon_set_moves (pokemon_set_id, move_slot, move_id)
+    VALUES (@pokemon_set_id, @move_slot, @move_id)
+  `);
+
+  function getMovesForSetIds(setIds: string[]): SetMoveRow[] {
+    if (setIds.length === 0) return [];
+
+    const ids = Array.from(new Set(setIds));
+    const placeholders = ids.map(() => "?").join(", ");
+
+    const stmt = db.prepare(`
+      SELECT
+        psm.pokemon_set_id,
+        psm.move_slot,
+        m.name
+      FROM pokemon_set_moves psm
+      JOIN moves m ON m.id = psm.move_id
+      WHERE psm.pokemon_set_id IN (${placeholders})
+      ORDER BY psm.pokemon_set_id ASC, psm.move_slot ASC
+    `);
+
+    return stmt.all(...ids) as SetMoveRow[];
+  }
+
   return {
     insertTeam(args: CreateTeamArgs) {
       insertTeamStmt.run(args);
@@ -181,9 +226,30 @@ export function teamsQueries(db: BetterSqlite3.Database) {
       const latestVersion =
         (getLatestVersionStmt.get(teamId) as TeamVersionRow | undefined) ?? null;
 
-      const slots = latestVersion
-        ? (getSlotsForVersionStmt.all(latestVersion.id) as TeamSlotWithSetRow[])
+            const slotsBase = latestVersion
+        ? (getSlotsForVersionStmt.all(latestVersion.id) as Omit<TeamSlotWithSetRow, "moves">[])
         : [];
+
+      let slots: TeamSlotWithSetRow[] = [];
+
+      if (slotsBase.length === 0) {
+        slots = [];
+      } else {
+        const ids = Array.from(new Set(slotsBase.map(s => s.pokemon_set_id)));
+        const rows = getMovesForSetIds((ids));
+
+        const movesBySetId = new Map<string, string[]>();
+        for (const r of rows) {
+          const arr = movesBySetId.get(r.pokemon_set_id) ?? [];
+          arr.push(r.name);
+          movesBySetId.set(r.pokemon_set_id, arr);
+        }
+
+        slots = slotsBase.map((s) => ({
+          ...s,
+          moves: movesBySetId.get(s.pokemon_set_id) ?? [],
+        }));
+      }
 
       return {
         team,
@@ -191,5 +257,29 @@ export function teamsQueries(db: BetterSqlite3.Database) {
         slots,
       } satisfies TeamDetails;
     },
+
+    getOrCreateMoveId(name: string): number {
+      const trimmed = name.trim();
+      if (!trimmed) throw new Error("Move name is empty.");
+
+      const found = selectMoveByNameStmt.get({ name: trimmed }) as MoveRowId | undefined;
+      if (found?.id) return found.id;
+
+      // Insert (may race on UNIQUE in concurrent runs; safe to catch & re-select)
+      try {
+        insertMoveStmt.run({ name: trimmed });
+      } catch (e) {
+        // If UNIQUE constraint hit, just fall through to re-select.
+      }
+
+      const row = selectMoveByNameStmt.get({ name: trimmed }) as MoveRowId | undefined;
+      if (!row?.id) throw new Error(`Failed to create move: ${trimmed}`);
+      return row.id;
+    },
+
+    insertPokemonSetMove(args: { pokemon_set_id: string; move_slot: number; move_id: number }) {
+      insertSetMoveStmt.run(args);
+    },
+
   };
 }
