@@ -4,6 +4,7 @@ export type TeamListRow = {
   format_ps: string | null;
   updated_at: string;
   latest_version_num: number | null;
+  is_active: number | null;
 };
 
 export type CreateTeamArgs = {
@@ -55,6 +56,7 @@ export type TeamHeaderRow = {
   format_ps: string | null;
   created_at: string;
   updated_at: string;
+  is_active: string;
 };
 
 export type TeamVersionRow = {

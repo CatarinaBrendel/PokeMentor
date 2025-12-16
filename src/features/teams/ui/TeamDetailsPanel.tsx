@@ -4,6 +4,7 @@ import type { TeamDetails, TeamSlotWithSetRow } from "./teams.types"; // adjust 
 type Props = {
   data: TeamDetails;
   onClose: () => void;
+  onSetActive?: (teamId: string) => void | Promise<void>;
 };
 
 type ExportSlot = {
@@ -285,7 +286,7 @@ function PokemonSlotCard({
   );
 }
 
-export default function TeamDetailsPanel({ data, onClose }: Props) {
+export default function TeamDetailsPanel({ data, onClose, onSetActive }: Props) {
   const { team, latestVersion, slots } = data;
 
 
@@ -357,19 +358,37 @@ export default function TeamDetailsPanel({ data, onClose }: Props) {
             ) : null}
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close team details"
-            className={cx(
-              "cursor-pointer rounded-lg px-2 py-1",
-              "text-dust-600 hover:bg-dust-200 hover:text-dust-900",
-              "focus:outline-none focus:ring-2 focus:ring-fern-500/40"
-            )}
-            title="Close"
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onSetActive?.(team.id)}
+              disabled={!onSetActive || !!team.is_active}
+              className={cx(
+                "rounded-lg px-3 py-1.5 text-sm font-semibold ring-1 ring-black/10",
+                !onSetActive && "opacity-50 cursor-not-allowed",
+                team.is_active
+                  ? "bg-fern-100 text-fern-800 cursor-default"
+                  : "bg-white text-dust-800 hover:bg-dust-200"
+              )}
+              title={team.is_active ? "This is already the active team" : "Set this team as active"}
+            >
+              {team.is_active ? "Active team" : "Set active"}
+            </button>
+
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close team details"
+              className={cx(
+                "cursor-pointer rounded-lg px-2 py-1",
+                "text-dust-600 hover:bg-dust-200 hover:text-dust-900",
+                "focus:outline-none focus:ring-2 focus:ring-fern-500/40"
+              )}
+              title="Close"
+            >
+              ✕
+            </button>
+          </div>  
         </div>
 
         {/* Panel controls */}

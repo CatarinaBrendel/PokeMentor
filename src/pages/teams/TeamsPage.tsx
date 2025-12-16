@@ -12,71 +12,114 @@ export function TeamsPage() {
 
   const [rows, setRows] = React.useState<TeamListRow[]>([]);
   const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+  const [listError, setListError] = React.useState<string | null>(null);
+  const [detailsError, setDetailsError] = React.useState<string | null>(null);
 
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [details, setDetails] = useState<TeamDetails | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
 
+  const listReqId = React.useRef(0);
+  const detailsReqId = React.useRef(0);
+
   useEffect(() => {
     if (!selectedTeamId) return;
 
+    const reqId = ++detailsReqId.current;
+
     setDetailsLoading(true);
     setDetails(null);
+    setDetailsError(null);
 
     TeamsApi.getDetails(selectedTeamId)
-      .then(setDetails)
-      .catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : "Failed to load team details.");
+      .then((d) => {
+        if (reqId !== detailsReqId.current) return;
+        setDetails(d);
       })
-      .finally(() => setDetailsLoading(false));
+      .catch((e: unknown) => {
+        if (reqId !== detailsReqId.current) return;
+        setDetailsError(e instanceof Error ? e.message : "Failed to load team details.");
+      })
+      .finally(() => {
+        if (reqId !== detailsReqId.current) return;
+        setDetailsLoading(false);
+      });
   }, [selectedTeamId]);
 
-  async function loadTeams() {
+  const loadTeams = React.useCallback(async () => {
+    const reqId = ++listReqId.current;
+
     setLoading(true);
-    setError(null);
+
     try {
       const data = await TeamsApi.listTeams();
-      setRows(data);
+      if (reqId === listReqId.current) {
+        setRows(data);
+        setListError(null);
+      }
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to load teams.");
+      if (reqId === listReqId.current) {
+        setListError(e instanceof Error ? e.message : "Failed to load teams.");
+      }
     } finally {
-      setLoading(false);
+      if (reqId === listReqId.current) {
+        setLoading(false);
+      }
     }
-  }
+  }, []);
 
   async function onDeleteTeam(teamId: string) {
     const ok = window.confirm("Delete this team? This cannot be undone.");
     if (!ok) return;
 
-    // Clear details if we delete the selected team
     if (selectedTeamId === teamId) {
       setSelectedTeamId(null);
       setDetails(null);
     }
 
-    setLoading(true);
-    setError(null);
-
     try {
       await TeamsApi.deleteTeam(teamId);
       await loadTeams();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to delete team.");
-    } finally {
-      setLoading(false);
+      setListError(e instanceof Error ? e.message : "Failed to delete team.");
     }
   }
+
+  const handleSetActiveTeam = React.useCallback(
+    async (teamId: string) => {
+      await TeamsApi.setTeamActive(teamId);
+
+      // refresh list through the guarded loader
+      await loadTeams();
+
+      // refresh details (guarded)
+      const reqId = ++detailsReqId.current;
+      setDetailsLoading(true);
+      setDetailsError(null);
+      try {
+        const nextDetails = await TeamsApi.getDetails(teamId);
+        if (reqId !== detailsReqId.current) return;
+        setDetails(nextDetails);
+      } catch (e: unknown) {
+        if (reqId !== detailsReqId.current) return;
+        setDetailsError(e instanceof Error ? e.message : "Failed to load team details.");
+      } finally {
+        if (reqId !== detailsReqId.current) {
+          setDetailsLoading(false);
+        }
+      }
+    },
+    [loadTeams]
+  );  
 
   useEffect(() => {
     if (tab === "list") void loadTeams();
 
-    // optional: when switching tabs, clear selection/details
     if (tab !== "list") {
       setSelectedTeamId(null);
       setDetails(null);
     }
-  }, [tab]);
+  }, [tab, loadTeams]);
 
   return (
     <div className="w-full p-8 space-y-6">
@@ -89,7 +132,7 @@ export function TeamsPage() {
           <TeamsView
             rows={rows}
             loading={loading}
-            error={error}
+            error={detailsLoading ? null : listError}
             selectedId={selectedTeamId}
             onSelect={setSelectedTeamId}
             onDelete={onDeleteTeam}
@@ -97,18 +140,19 @@ export function TeamsPage() {
 
           {selectedTeamId ? (
             detailsLoading ? (
-              <div className="text-sm text-dust-600">Loading team details…</div>
+              <div className="text-sm text-dust-50">Loading team details…</div>
             ) : details ? (
               <TeamDetailsPanel
                 data={details}
                 onClose={() => {
                   setSelectedTeamId(null);
-                  setDetails(null);
+                  setDetailsError(null);
                 }}
+                onSetActive={handleSetActiveTeam}
               />
-            ) : (
-              <div className="text-sm text-red-700">Failed to load team details.</div>
-            )
+            ) : detailsError ? (
+              <div className="text-sm text-red-700">{detailsError}</div>
+            ) : null
           ) : null}
         </>
       )}

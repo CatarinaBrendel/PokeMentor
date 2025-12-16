@@ -78,18 +78,19 @@ export function teamsQueries(db: BetterSqlite3.Database) {
   `);
 
   const listTeamsStmt = db.prepare(`
-    SELECT
+   SELECT
       t.id,
       t.name,
       t.format_ps,
       t.updated_at,
+      t.is_active,
       (
         SELECT MAX(tv.version_num)
         FROM team_versions tv
         WHERE tv.team_id = t.id
       ) AS latest_version_num
     FROM teams t
-    ORDER BY t.updated_at DESC
+    ORDER BY t.is_active DESC, t.updated_at DESC;
   `);
 
   const deleteTeamStmt = db.prepare(`
@@ -98,7 +99,7 @@ export function teamsQueries(db: BetterSqlite3.Database) {
   `);
 
   const getTeamStmt = db.prepare(`
-    SELECT id, name, format_ps, created_at, updated_at
+    SELECT id, name, format_ps, created_at, updated_at, is_active
     FROM teams
     WHERE id = ?
     LIMIT 1
@@ -165,6 +166,15 @@ export function teamsQueries(db: BetterSqlite3.Database) {
   const insertSetMoveStmt = db.prepare(`
     INSERT INTO pokemon_set_moves (pokemon_set_id, move_slot, move_id)
     VALUES (@pokemon_set_id, @move_slot, @move_id)
+  `);
+
+  const clearActiveTeamsStmt = db.prepare(`
+    UPDATE teams SET is_active = 0
+  `);
+
+  const setActiveTeamStmt = db.prepare(`
+    UPDATE teams SET is_active = 1
+    WHERE id = @team_id
   `);
 
   function getMovesForSetIds(setIds: string[]): SetMoveRow[] {
@@ -279,6 +289,16 @@ export function teamsQueries(db: BetterSqlite3.Database) {
 
     insertPokemonSetMove(args: { pokemon_set_id: string; move_slot: number; move_id: number }) {
       insertSetMoveStmt.run(args);
+    },
+
+    setActiveTeam(team_id: string) {
+      db.transaction(() => {
+        clearActiveTeamsStmt.run();
+        const res = setActiveTeamStmt.run({ team_id });
+        if (res.changes !== 1) {
+          throw new Error(`setActiveTeam: team not found: ${team_id}`);
+        }
+      })();
     },
 
   };

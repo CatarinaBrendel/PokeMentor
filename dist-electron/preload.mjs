@@ -22,9 +22,8 @@ electron.contextBridge.exposeInMainWorld("api", {
   teams: {
     importPokepaste: (args) => electron.ipcRenderer.invoke("db:teams:importPokepaste", args),
     listTeams: () => electron.ipcRenderer.invoke("db:teams:list"),
-    deleteTeam: (teamId) => {
-      electron.ipcRenderer.invoke("db:teams:delete", teamId);
-    },
-    getDetails: (teamId) => electron.ipcRenderer.invoke("db:teams:getDetails", teamId)
+    deleteTeam: (teamId) => electron.ipcRenderer.invoke("db:teams:delete", teamId),
+    getDetails: (teamId) => electron.ipcRenderer.invoke("db:teams:getDetails", teamId),
+    setTeamActive: (teamId) => electron.ipcRenderer.invoke("db:teams:setTeamActive", teamId)
   }
 });

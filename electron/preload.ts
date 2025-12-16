@@ -26,14 +26,17 @@ contextBridge.exposeInMainWorld("api", {
   teams: {
     importPokepaste: (args: { url: string; name?: string; format_ps?: string }) =>
       ipcRenderer.invoke("db:teams:importPokepaste", args),
-    
-    listTeams: () => ipcRenderer.invoke("db:teams:list") as Promise<TeamListRow[]>,
 
-    deleteTeam: (teamId: string) => {
-      ipcRenderer.invoke("db:teams:delete", teamId);
-    },
+    listTeams: () =>
+      ipcRenderer.invoke("db:teams:list") as Promise<TeamListRow[]>,
+
+    deleteTeam: (teamId: string) =>
+      ipcRenderer.invoke("db:teams:delete", teamId),
 
     getDetails: (teamId: string) =>
       ipcRenderer.invoke("db:teams:getDetails", teamId),
+
+    setTeamActive: (teamId: string) =>
+      ipcRenderer.invoke("db:teams:setTeamActive", teamId),
   },
 });

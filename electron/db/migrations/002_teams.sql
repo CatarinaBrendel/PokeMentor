@@ -3,8 +3,11 @@ CREATE TABLE IF NOT EXISTS teams (
   name TEXT,                           -- user-friendly name
   format_ps TEXT,                      -- e.g. "gen9vgc2026regf" (optional)
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  is_active INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_teams_is_active ON teams(is_active);
 
 -- One paste/import becomes one "version"
 CREATE TABLE IF NOT EXISTS team_versions (

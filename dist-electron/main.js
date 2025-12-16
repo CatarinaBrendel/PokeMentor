@@ -123,25 +123,26 @@ function teamsQueries(db2) {
     VALUES (@team_version_id, @slot_index, @pokemon_set_id)
   `);
   const listTeamsStmt = db2.prepare(`
-    SELECT
+   SELECT
       t.id,
       t.name,
       t.format_ps,
       t.updated_at,
+      t.is_active,
       (
         SELECT MAX(tv.version_num)
         FROM team_versions tv
         WHERE tv.team_id = t.id
       ) AS latest_version_num
     FROM teams t
-    ORDER BY t.updated_at DESC
+    ORDER BY t.is_active DESC, t.updated_at DESC;
   `);
   const deleteTeamStmt = db2.prepare(`
     DELETE FROM teams
     WHERE id = ?
   `);
   const getTeamStmt = db2.prepare(`
-    SELECT id, name, format_ps, created_at, updated_at
+    SELECT id, name, format_ps, created_at, updated_at, is_active
     FROM teams
     WHERE id = ?
     LIMIT 1
@@ -203,6 +204,13 @@ function teamsQueries(db2) {
   const insertSetMoveStmt = db2.prepare(`
     INSERT INTO pokemon_set_moves (pokemon_set_id, move_slot, move_id)
     VALUES (@pokemon_set_id, @move_slot, @move_id)
+  `);
+  const clearActiveTeamsStmt = db2.prepare(`
+    UPDATE teams SET is_active = 0
+  `);
+  const setActiveTeamStmt = db2.prepare(`
+    UPDATE teams SET is_active = 1
+    WHERE id = @team_id
   `);
   function getMovesForSetIds(setIds) {
     if (setIds.length === 0) return [];
@@ -288,6 +296,15 @@ function teamsQueries(db2) {
     },
     insertPokemonSetMove(args) {
       insertSetMoveStmt.run(args);
+    },
+    setActiveTeam(team_id) {
+      db2.transaction(() => {
+        clearActiveTeamsStmt.run();
+        const res = setActiveTeamStmt.run({ team_id });
+        if (res.changes !== 1) {
+          throw new Error(`setActiveTeam: team not found: ${team_id}`);
+        }
+      })();
     }
   };
 }
@@ -564,6 +581,12 @@ function listTeams() {
   const db2 = getDb();
   return teamsQueries(db2).listTeams();
 }
+function setTeamActive(teamId) {
+  const db2 = getDb();
+  const q = teamsQueries(db2);
+  q.setActiveTeam(teamId);
+  return { ok: true };
+}
 function deleteTeam(teamId) {
   const db2 = getDb();
   const q = teamsQueries(db2);
@@ -595,6 +618,9 @@ function registerDbHandlers() {
   });
   ipcMain.handle("db:teams:getDetails", async (_evt, teamId) => {
     return getTeamDetails(teamId);
+  });
+  ipcMain.handle("db:teams:setTeamActive", (_evt, teamId) => {
+    return setTeamActive(teamId);
   });
 }
 const __filename$1 = fileURLToPath(import.meta.url);

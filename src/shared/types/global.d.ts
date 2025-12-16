@@ -25,6 +25,7 @@ declare global {
         listTeams: () => Promise<TeamListRow[]>;
         deleteTeam: (teamId: string) => Promise<DeleteTeamResult>;
         getDetails: (teamId: string) => Promise<TeamDetails>;
+        setTeamActive: (teamId: string) => Promise <{ok: true}>
       };
     };
   }

@@ -12,4 +12,7 @@ deleteTeam: (teamId: string): Promise<DeleteTeamResult> =>
 
 getDetails: (teamId: string) =>
     window.api.teams.getDetails(teamId) as Promise<TeamDetails>,
+
+setTeamActive: (teamId: string): Promise<{ ok: true }> =>
+    window.api.teams.setTeamActive(teamId),
 };
