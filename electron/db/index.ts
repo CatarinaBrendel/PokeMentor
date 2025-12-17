@@ -11,18 +11,19 @@ let db: BetterSqlite3.Database | null = null;
 
 export function getDb() {
   if (db) return db;
-
+  
   const userData = app.getPath("userData");
   const dir = path.join(userData, "data");
   fs.mkdirSync(dir, { recursive: true });
-
+  
   const dbPath = path.join(dir, "pokementor.sqlite");
-
+  
   db = new Database(dbPath);
-
-  db.pragma("journal_mode = WAL");
+  
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");
+  db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
 
   console.log("[db] userData =", userData);
   console.log("[db] dbPath   =", dbPath);

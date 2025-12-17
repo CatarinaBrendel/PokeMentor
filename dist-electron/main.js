@@ -14,9 +14,10 @@ function getDb() {
   fs.mkdirSync(dir, { recursive: true });
   const dbPath = path.join(dir, "pokementor.sqlite");
   db = new Database(dbPath);
-  db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");
+  db.pragma("journal_mode = WAL");
+  db.pragma("synchronous = NORMAL");
   console.log("[db] userData =", userData);
   console.log("[db] dbPath   =", dbPath);
   return db;
@@ -42,9 +43,6 @@ ${candidates.map((d) => `- ${d}`).join("\n")}`
 async function runMigrations() {
   await app.whenReady();
   const db2 = getDb();
-  db2.pragma("journal_mode = DELETE");
-  db2.pragma("foreign_keys = ON");
-  db2.pragma("busy_timeout = 5000");
   db2.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id INTEGER PRIMARY KEY,
@@ -666,16 +664,486 @@ function getActiveTeamSummary() {
   const db2 = getDb();
   return teamsQueries(db2).getActiveTeamSummary();
 }
+const BASE = "https://replay.pokemonshowdown.com";
+function normalizeReplayInput(line) {
+  const raw = line.trim();
+  if (!raw) throw new Error("Empty line");
+  if (raw.startsWith("http://") || raw.startsWith("https://")) {
+    const u = new URL(raw);
+    const path2 = u.pathname.replace(/^\//, "");
+    const replayId2 = path2.replace(/\.json$/, "");
+    if (!replayId2) throw new Error("Could not extract replay id from URL");
+    const replayUrl2 = `${BASE}/${replayId2}`;
+    return { replayId: replayId2, replayUrl: replayUrl2, jsonUrl: `${replayUrl2}.json` };
+  }
+  const replayId = raw.replace(/\.json$/, "");
+  const replayUrl = `${BASE}/${replayId}`;
+  return { replayId, replayUrl, jsonUrl: `${replayUrl}.json` };
+}
+async function fetchReplayJson(jsonUrl) {
+  const res = await fetch(jsonUrl, { method: "GET" });
+  if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
+  const data = await res.json();
+  if (!(data == null ? void 0 : data.id) || !(data == null ? void 0 : data.log)) throw new Error("Unexpected JSON payload (missing id/log)");
+  return data;
+}
+function uuid() {
+  return crypto.randomUUID();
+}
+function getSetting(db2, key) {
+  const row = db2.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
+  return (row == null ? void 0 : row.value) ?? null;
+}
+function normalizeShowdownName$1(name) {
+  return name.trim().replace(/^☆+/, "").replace(/\s+/g, "").toLowerCase();
+}
+function parseLogLines(rawLog) {
+  return rawLog.split("\n").map((s) => s.trimEnd()).filter((s) => s.length > 0);
+}
+function parsePipeLine(line) {
+  const parts = line.split("|");
+  if (parts[0] === "") parts.shift();
+  return parts;
+}
+function firstTUnix(lines) {
+  for (const l of lines) {
+    const parts = parsePipeLine(l);
+    if (parts[0] === "t:" && parts[1]) {
+      const n = Number(parts[1]);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return null;
+}
+function hasRatedLine(lines) {
+  return lines.some((l) => l === "|rated|" || l.startsWith("|rated|"));
+}
+function findWinner(lines) {
+  let winnerName = null;
+  for (const l of lines) {
+    const parts = parsePipeLine(l);
+    if (parts[0] === "win" && parts[1]) winnerName = parts[1];
+  }
+  if (!winnerName) return { winnerName: null, winnerSide: null };
+  let p1 = null;
+  let p2 = null;
+  for (const l of lines) {
+    const parts = parsePipeLine(l);
+    if (parts[0] === "player") {
+      const side = parts[1];
+      const name = parts[2];
+      if (side === "p1") p1 = name ?? null;
+      if (side === "p2") p2 = name ?? null;
+    }
+  }
+  const winnerSide = winnerName === p1 ? "p1" : winnerName === p2 ? "p2" : null;
+  return { winnerName, winnerSide };
+}
+function ingestReplayJson(db2, replayUrl, replayJsonUrl, json) {
+  var _a, _b;
+  const now = Math.floor(Date.now() / 1e3);
+  const battleId = uuid();
+  const lines = parseLogLines(json.log ?? "");
+  const playedAt = firstTUnix(lines) ?? json.uploadtime ?? now;
+  const isRated = hasRatedLine(lines) ? 1 : 0;
+  const { winnerName, winnerSide } = findWinner(lines);
+  const insertBattle = db2.prepare(`
+    INSERT INTO battles (
+      id, replay_id, replay_url, replay_json_url,
+      format_id, format_name, gen, game_type,
+      upload_time, played_at, views, rating, is_private, is_rated,
+      winner_side, winner_name,
+      raw_json, raw_log,
+      created_at
+    ) VALUES (
+      @id, @replay_id, @replay_url, @replay_json_url,
+      @format_id, @format_name, @gen, @game_type,
+      @upload_time, @played_at, @views, @rating, @is_private, @is_rated,
+      @winner_side, @winner_name,
+      @raw_json, @raw_log,
+      @created_at
+    );
+  `);
+  const insertSide = db2.prepare(`
+    INSERT INTO battle_sides (battle_id, side, is_user, player_name, avatar, rating)
+    VALUES (@battle_id, @side, @is_user, @player_name, @avatar, @rating);
+  `);
+  const insertPreview = db2.prepare(`
+    INSERT INTO battle_preview_pokemon (battle_id, side, slot_index, species_name, level, gender, shiny, raw_text)
+    VALUES (@battle_id, @side, @slot_index, @species_name, @level, @gender, @shiny, @raw_text);
+  `);
+  const insertRevealed = db2.prepare(`
+    INSERT INTO battle_revealed_sets (
+      battle_id, side, species_name, nickname, item_name, ability_name, tera_type, level, gender, shiny, moves_json, raw_fragment
+    ) VALUES (
+      @battle_id, @side, @species_name, @nickname, @item_name, @ability_name, @tera_type, @level, @gender, @shiny, @moves_json, @raw_fragment
+    );
+  `);
+  const insertEvent = db2.prepare(`
+    INSERT INTO battle_events (
+      battle_id, event_index, turn_num, t_unix,
+      line_type, raw_line,
+      actor_ref, actor_name, target_ref, target_name,
+      move_name, item_name, ability_name,
+      condition_text, value_text, value_num,
+      flags_json, payload_json
+    ) VALUES (
+      @battle_id, @event_index, @turn_num, @t_unix,
+      @line_type, @raw_line,
+      @actor_ref, @actor_name, @target_ref, @target_name,
+      @move_name, @item_name, @ability_name,
+      @condition_text, @value_text, @value_num,
+      @flags_json, @payload_json
+    );
+  `);
+  let gen = null;
+  let gameType = null;
+  for (const l of lines) {
+    const p = parsePipeLine(l);
+    if (p[0] === "gen" && p[1]) gen = Number(p[1]);
+    if (p[0] === "gametype" && p[1]) gameType = p[1];
+  }
+  insertBattle.run({
+    id: battleId,
+    replay_id: json.id,
+    replay_url: replayUrl,
+    replay_json_url: replayJsonUrl,
+    format_id: json.formatid ?? null,
+    format_name: json.format ?? null,
+    gen: Number.isFinite(gen) ? gen : null,
+    game_type: gameType,
+    upload_time: json.uploadtime ?? null,
+    played_at: playedAt ?? null,
+    views: json.views ?? null,
+    rating: json.rating ?? null,
+    is_private: json.private ? 1 : 0,
+    is_rated: isRated,
+    winner_side: winnerSide,
+    winner_name: winnerName,
+    raw_json: JSON.stringify(json),
+    raw_log: json.log ?? "",
+    created_at: now
+  });
+  let eventIndex = 0;
+  let currentTurn = null;
+  let currentT = null;
+  const previewSlotCounter = { p1: 0, p2: 0 };
+  const showdownUsername = getSetting(db2, "showdown_username");
+  const showdownUsernameNorm = showdownUsername ? normalizeShowdownName$1(showdownUsername) : null;
+  function computeIsUser(playerName) {
+    if (!showdownUsernameNorm) return 0;
+    return normalizeShowdownName$1(playerName) === showdownUsernameNorm ? 1 : 0;
+  }
+  for (const l of lines) {
+    const parts = parsePipeLine(l);
+    const type = parts[0] ?? "unknown";
+    if (type === "t:" && parts[1]) {
+      const n = Number(parts[1]);
+      if (Number.isFinite(n)) currentT = n;
+    }
+    if (type === "turn" && parts[1]) {
+      const n = Number(parts[1]);
+      if (Number.isFinite(n)) currentTurn = n;
+    }
+    if (type === "player") {
+      const side = parts[1];
+      const name = parts[2] ?? "";
+      const avatar = parts[3] ?? null;
+      const rating = parts[4] ? Number(parts[4]) : null;
+      if ((side === "p1" || side === "p2") && name) {
+        insertSide.run({
+          battle_id: battleId,
+          side,
+          is_user: computeIsUser(name),
+          player_name: name,
+          avatar,
+          rating: Number.isFinite(rating) ? rating : null
+        });
+      }
+    }
+    if (type === "poke") {
+      const side = parts[1];
+      const rawText = parts[2] ?? "";
+      if (side === "p1" || side === "p2") {
+        previewSlotCounter[side] += 1;
+        const slotIndex = previewSlotCounter[side];
+        const bits = rawText.split(",").map((s) => s.trim());
+        const species = (bits[0] ?? "").trim();
+        const level = bits.find((b) => b.startsWith("L")) ? Number((_a = bits.find((b) => b.startsWith("L"))) == null ? void 0 : _a.slice(1)) : null;
+        const gender = bits.includes("M") ? "M" : bits.includes("F") ? "F" : null;
+        insertPreview.run({
+          battle_id: battleId,
+          side,
+          slot_index: slotIndex,
+          species_name: species,
+          level: Number.isFinite(level) ? level : null,
+          gender,
+          shiny: 0,
+          raw_text: rawText
+        });
+      }
+    }
+    if (type === "showteam") {
+      const side = parts[1];
+      const blob = parts[2] ?? "";
+      const entries = blob.split("]").map((x) => x.trim()).filter(Boolean);
+      for (const entry of entries) {
+        const fields = entry.split("|");
+        const species = fields[0] ?? "";
+        const nickname = fields[1] || null;
+        const item = fields[3] || null;
+        const ability = fields[4] || null;
+        const movesCsv = fields[5] || "";
+        const gender = fields[8] === "M" || fields[8] === "F" ? fields[8] : null;
+        const level = fields[11] ? Number(fields[11]) : null;
+        const tail = fields[12] ?? "";
+        const teraGuess = tail.includes(",") ? (_b = tail.split(",").pop()) == null ? void 0 : _b.trim() : null;
+        const moves = movesCsv.split(",").map((m) => m.trim()).filter(Boolean);
+        insertRevealed.run({
+          battle_id: battleId,
+          side,
+          species_name: species,
+          nickname,
+          item_name: item,
+          ability_name: ability,
+          tera_type: teraGuess || null,
+          level: Number.isFinite(level) ? level : null,
+          gender,
+          shiny: 0,
+          moves_json: JSON.stringify(moves),
+          raw_fragment: entry
+        });
+      }
+    }
+    insertEvent.run({
+      battle_id: battleId,
+      event_index: eventIndex++,
+      turn_num: currentTurn,
+      t_unix: currentT,
+      line_type: type,
+      raw_line: l,
+      actor_ref: null,
+      actor_name: null,
+      target_ref: null,
+      target_name: null,
+      move_name: type === "move" ? parts[2] ?? null : null,
+      item_name: null,
+      ability_name: null,
+      condition_text: null,
+      value_text: null,
+      value_num: null,
+      flags_json: "{}",
+      payload_json: "{}"
+    });
+  }
+  return { battleId };
+}
+async function importBattlesFromReplaysText(args) {
+  const db2 = getDb();
+  const inputs = Array.from(
+    new Set(
+      args.text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+    )
+  );
+  const rows = [];
+  let okCount = 0;
+  let failCount = 0;
+  for (const input of inputs) {
+    try {
+      const { replayId, replayUrl, jsonUrl } = normalizeReplayInput(input);
+      const existing = db2.prepare("SELECT id FROM battles WHERE replay_id = ?").get(replayId);
+      if (existing == null ? void 0 : existing.id) {
+        rows.push({ input, ok: true, replayId, battleId: existing.id });
+        okCount += 1;
+        continue;
+      }
+      const json = await fetchReplayJson(jsonUrl);
+      const tx = db2.transaction(() => {
+        const { battleId: battleId2 } = ingestReplayJson(db2, replayUrl, jsonUrl, json);
+        return battleId2;
+      });
+      const battleId = tx();
+      rows.push({ input, ok: true, replayId, battleId });
+      okCount += 1;
+    } catch (e) {
+      rows.push({ input, ok: false, error: e instanceof Error ? e.message : String(e) });
+      failCount += 1;
+    }
+  }
+  return { okCount, failCount, rows };
+}
+function listBattles(args = {}) {
+  const db2 = getDb();
+  const limit = Math.min(Math.max(args.limit ?? 200, 1), 1e3);
+  const offset = Math.max(args.offset ?? 0, 0);
+  const stmt = db2.prepare(`
+    WITH sides AS (
+      SELECT
+        battle_id,
+        MAX(CASE WHEN is_user = 1 THEN side END)        AS user_side,
+        MAX(CASE WHEN is_user = 1 THEN player_name END) AS user_name,
+        MAX(CASE WHEN side = 'p1' THEN player_name END) AS p1_name,
+        MAX(CASE WHEN side = 'p2' THEN player_name END) AS p2_name
+      FROM battle_sides
+      GROUP BY battle_id
+    )
+    SELECT
+      b.id,
+      b.played_at,
+      b.format_id,
+      b.format_name,
+      b.is_rated,
+      b.winner_side,
+
+      s.user_side,
+      s.user_name,
+      s.p1_name,
+      s.p2_name,
+
+      CASE
+        WHEN s.user_side = 'p1' THEN s.p2_name
+        WHEN s.user_side = 'p2' THEN s.p1_name
+        -- fallback if user_side missing: prefer p2 if p1 exists, else p1
+        ELSE COALESCE(s.p2_name, s.p1_name)
+      END AS opponent_name,
+
+      CASE
+        WHEN s.user_side IS NULL THEN NULL
+        WHEN b.winner_side IS NULL THEN NULL
+        WHEN b.winner_side = s.user_side THEN 'win'
+        ELSE 'loss'
+      END AS result
+
+    FROM battles b
+    LEFT JOIN sides s ON s.battle_id = b.id
+    ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
+    LIMIT ? OFFSET ?;
+  `);
+  return stmt.all(limit, offset);
+}
+function getBattleDetails(battleId) {
+  const db2 = getDb();
+  const battle = db2.prepare(`
+    SELECT id, replay_url, replay_id, format_id, format_name, played_at, is_rated, winner_side
+    FROM battles
+    WHERE id = ?
+  `).get(battleId);
+  const sides = db2.prepare(`
+    SELECT side, is_user, player_name, avatar, rating
+    FROM battle_sides
+    WHERE battle_id = ?
+    ORDER BY side ASC
+  `).all(battleId);
+  const preview = db2.prepare(`
+    SELECT side, slot_index, species_name
+    FROM battle_preview_pokemon
+    WHERE battle_id = ?
+    ORDER BY side ASC, slot_index ASC
+  `).all(battleId);
+  const revealedRaw = db2.prepare(`
+    SELECT side, species_name, nickname, item_name, ability_name, tera_type, moves_json
+    FROM battle_revealed_sets
+    WHERE battle_id = ?
+    ORDER BY side ASC, species_name ASC
+  `).all(battleId);
+  const revealed = revealedRaw.map((r) => ({
+    side: r.side,
+    species_name: r.species_name,
+    nickname: r.nickname,
+    item_name: r.item_name,
+    ability_name: r.ability_name,
+    tera_type: r.tera_type,
+    moves: safeJsonArray(r.moves_json)
+  }));
+  return { battle, sides, preview, revealed };
+}
+function safeJsonArray(s) {
+  try {
+    const v = JSON.parse(s);
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function normalizeShowdownName(name) {
+  return name.trim().replace(/^☆+/, "").replace(/\s+/g, "").toLowerCase();
+}
+function backfillIsUserForAllBattles(db2, showdownUsername) {
+  const clearAll = db2.prepare(`UPDATE battle_sides SET is_user = 0`);
+  const setUserForBattle = db2.prepare(`
+    UPDATE battle_sides
+    SET is_user = 1
+    WHERE battle_id = ? AND side = ?
+  `);
+  if (!showdownUsername) {
+    clearAll.run();
+    return;
+  }
+  const target = normalizeShowdownName(showdownUsername);
+  const battles = db2.prepare(`SELECT DISTINCT battle_id FROM battle_sides`).all();
+  const getSides = db2.prepare(`
+    SELECT side, player_name
+    FROM battle_sides
+    WHERE battle_id = ?
+  `);
+  const tx = db2.transaction(() => {
+    clearAll.run();
+    for (const b of battles) {
+      const sides = getSides.all(b.battle_id);
+      const match = sides.find(
+        (s) => normalizeShowdownName(s.player_name) === target
+      );
+      if (match) {
+        setUserForBattle.run(b.battle_id, match.side);
+      }
+    }
+  });
+  tx();
+}
+function getSettings() {
+  const db2 = getDb();
+  const rows = db2.prepare(`SELECT key, value FROM app_settings`).all();
+  const map = new Map(rows.map((r) => [r.key, r.value]));
+  return {
+    showdown_username: map.get("showdown_username") ?? null
+  };
+}
+function updateSettings(args) {
+  const db2 = getDb();
+  const tx = db2.transaction(() => {
+    if (typeof args.showdown_username === "string") {
+      const name = args.showdown_username.trim();
+      const normalized = name.length ? name : null;
+      if (normalized) {
+        db2.prepare(`
+          INSERT INTO app_settings(key, value, updated_at)
+          VALUES ('showdown_username', ?, strftime('%s','now'))
+          ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        `).run(normalized);
+      } else {
+        db2.prepare(`DELETE FROM app_settings WHERE key = 'showdown_username'`).run();
+      }
+      backfillIsUserForAllBattles(db2, normalized);
+    }
+  });
+  tx();
+  return getSettings();
+}
 ipcMain.removeHandler("db:teams:importPokepaste");
 ipcMain.removeHandler("db:teams:list");
+ipcMain.removeHandler("db:battles:importReplays");
+ipcMain.removeHandler("db:settings:get");
+ipcMain.removeHandler("db:settings:update");
 function registerDbHandlers() {
   ipcMain.handle("db:teams:importPokepaste", async (_evt, args) => {
-    const result = importTeamFromPokepaste(args);
+    const result = await importTeamFromPokepaste(args);
     return {
-      team_id: (await result).team_id,
-      version_id: (await result).version_id,
-      version_num: (await result).version_num,
-      slots_inserted: (await result).slots_inserted
+      team_id: result.team_id,
+      version_id: result.version_id,
+      version_num: result.version_num,
+      slots_inserted: result.slots_inserted
     };
   });
   ipcMain.handle("db:teams:list", async () => {
@@ -696,6 +1164,21 @@ function registerDbHandlers() {
   ipcMain.handle("db:teams:getActiveActivity", () => {
     return getActiveTeamActivity();
   });
+  ipcMain.handle("db:battles:importReplays", async (_evt, args) => {
+    return importBattlesFromReplaysText(args);
+  });
+  ipcMain.handle("db:battles:list", async (_evt, args) => {
+    return listBattles(args);
+  });
+  ipcMain.handle("db:settings:get", async () => {
+    return getSettings();
+  });
+  ipcMain.handle("db:settings:update", async (_evt, args) => {
+    return updateSettings(args);
+  });
+  ipcMain.handle("db:battles:getDetails", async (_evt, battleId) => {
+    return getBattleDetails(battleId);
+  });
 }
 const __filename$1 = fileURLToPath(import.meta.url);
 const __dirname$1 = dirname(__filename$1);
@@ -708,9 +1191,9 @@ let win = null;
 function createWindow() {
   win = new BrowserWindow({
     width: 1380,
-    height: 860,
+    height: 880,
     minWidth: 1280,
-    minHeight: 840,
+    minHeight: 860,
     icon: path.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
     webPreferences: {
       preload: path.join(__dirname$1, "preload.mjs"),

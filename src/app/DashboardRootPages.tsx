@@ -10,6 +10,8 @@ import type { TeamListRow } from "../features/teams/ui/TeamsView";
 import { usePersistedState } from "../shared/hooks/usePersistedState";
 import { ActiveTeamActivity } from "../features/teams/model/teams.types";
 import ActiveTeamActivityCard from "../shared/ui/ActiveTeamActivityCard"
+import { SettingsPage } from "../pages/settings/SettingsPage";
+import { SettingsApi } from "../features/settings/api/settings.api";
 
 function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void }) {
   const [activeLeak, setActiveLeak] = useState<string | null>(null);
@@ -105,6 +107,7 @@ function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void })
 export default function DashboardRootPage() {
   const [page, setPage] = useState<NavKey>("dashboard");
   const [openTeamId, setOpenTeamId] = useState<string | null>(null);
+  const [showdownUsername, setShowdownUsername] = useState<string | null>(null);
 
   const pagesDef: Record<NavKey, React.ReactNode> = {
     dashboard: (
@@ -121,8 +124,41 @@ export default function DashboardRootPage() {
     paths: <div className="p-8">Learning Paths (todo)</div>,
     practice: <div className="p-8">Practice Scenarios (todo)</div>,
     pokedex: <div className="p-8">Pokedex (todo)</div>,
-    settings: <div className="p-8">Settings (todo)</div>,
+    settings: <SettingsPage />,
   };
+
+  async function refreshSettings() {
+    try {
+      const s = await SettingsApi.get();
+      setShowdownUsername(s.showdown_username ?? null);
+    } catch {
+      // optionally toast; but don't block shell rendering
+      setShowdownUsername(null);
+    }
+  }
+
+  useEffect(() => {
+    refreshSettings();
+
+    const onChanged = () => refreshSettings();
+    window.addEventListener("pm:settings-changed", onChanged);
+    return () => window.removeEventListener("pm:settings-changed", onChanged);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await SettingsApi.get();
+        if (!cancelled) setShowdownUsername(s.showdown_username ?? null);
+      } catch {
+        // optional: toast, but sidebar can just show placeholder
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <DashboardShell
@@ -132,6 +168,8 @@ export default function DashboardRootPage() {
         if (next !== "teams") setOpenTeamId(null); // clear one-shot intent when leaving Teams
       }}
       pages={pagesDef}
+      showdownUsername={showdownUsername}
+      onOpenShowdownSettings={() => setPage("settings")}
     />
   );
 }

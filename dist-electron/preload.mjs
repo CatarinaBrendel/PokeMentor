@@ -27,5 +27,14 @@ electron.contextBridge.exposeInMainWorld("api", {
     setTeamActive: (teamId) => electron.ipcRenderer.invoke("db:teams:setTeamActive", teamId),
     getActiveSummary: () => electron.ipcRenderer.invoke("db:teams:getActiveSummary"),
     getActiveActivity: () => electron.ipcRenderer.invoke("db:teams:getActiveActivity")
+  },
+  battles: {
+    importReplays: (args) => electron.ipcRenderer.invoke("db:battles:importReplays", args),
+    list: (args) => electron.ipcRenderer.invoke("db:battles:list", args),
+    getDetails: (battleId) => electron.ipcRenderer.invoke("db:battles:getDetails", battleId)
+  },
+  settings: {
+    get: () => electron.ipcRenderer.invoke("db:settings:get"),
+    update: (args) => electron.ipcRenderer.invoke("db:settings:update", args)
   }
 });

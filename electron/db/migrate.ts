@@ -33,10 +33,6 @@ export async function runMigrations() {
   await app.whenReady();
   const db = getDb();
 
-  db.pragma("journal_mode = DELETE");
-  db.pragma("foreign_keys = ON");
-  db.pragma("busy_timeout = 5000");
-
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id INTEGER PRIMARY KEY,

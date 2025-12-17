@@ -1,8 +1,12 @@
 import Dashboard from "./pages/dashboard/DashboardPage";
+import { ToastHost } from "./shared/ui/ToastHost";
 
 function App() {
   return (
-    <Dashboard />
+    <>
+      <ToastHost />
+      <Dashboard />
+    </>
   );
 }
 

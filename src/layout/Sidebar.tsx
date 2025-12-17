@@ -10,6 +10,7 @@ import {
   Settings,
   PanelLeftClose,
   PanelLeftOpen,
+  User,
 } from "lucide-react";
 
 type NavKey =
@@ -27,6 +28,9 @@ type SidebarProps = {
   collapsed: boolean;
   onToggle: () => void;
   onSelect?: (key: NavKey) => void;
+
+  showdownUsername?: string | null;
+  onOpenSettings?: () => void; // called when user clicks footer row/button
 };
 
 function cx(...xs: Array<string | false | null | undefined>) {
@@ -49,6 +53,8 @@ export default function Sidebar({
   collapsed,
   onToggle,
   onSelect,
+  showdownUsername,
+  onOpenSettings,
 }: SidebarProps) {
   return (
     <aside
@@ -105,9 +111,41 @@ export default function Sidebar({
           })}
         </nav>
 
-        {/* Bottom spacer (optional) */}
-        <div className="mt-auto pt-4">
-          <div className={cx("text-xs opacity-70", collapsed && "text-center")}>
+        {/* Footer: Showdown identity */}
+        <div className="mt-auto pt-4 space-y-3">
+          {showdownUsername?.trim() ? (
+            <button
+              type="button"
+              onClick={() => onOpenSettings?.()}
+              className={cx(
+                "w-full rounded-2xl px-3 py-2 transition",
+                "hover:bg-white/10",
+                collapsed ? "flex items-center justify-center" : "flex items-center gap-2"
+              )}
+              title="Open Settings"
+            >
+              <User size={16} className="opacity-80" />
+              {!collapsed ? (
+                <span className="truncate text-sm font-semibold opacity-90">
+                  {showdownUsername}
+                </span>
+              ) : null}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onOpenSettings?.()}
+              className={cx(
+                "w-full rounded-2xl bg-white/10 px-3 py-2 text-sm font-semibold transition",
+                "hover:bg-white/15",
+                collapsed && "text-[11px] px-2"
+              )}
+              title="Set Pokémon Showdown username"
+            >
+              {collapsed ? "Set" : "Set Showdown username"}
+            </button>
+          )}
+          <div className={cx("text-s opacity-70 text-center", collapsed && "text-center")}>
             {!collapsed ? "PokeMentor" : "PM"}
           </div>
         </div>

@@ -1,5 +1,3 @@
-import React from "react";
-
 export type ToastType = "success" | "error";
 
 type ToastProps = {
@@ -11,6 +9,7 @@ export function Toast({ message, type }: ToastProps) {
   return (
     <div
       className={`
+        animate-in fade-in slide-in-from-top-2
         rounded-2xl px-4 py-3 text-sm shadow-lg
         ${type === "success" ? "bg-fern-700 text-dust-50" : ""}
         ${type === "error" ? "bg-red-700 text-white" : ""}
