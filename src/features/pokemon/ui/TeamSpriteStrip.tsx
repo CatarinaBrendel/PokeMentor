@@ -33,7 +33,7 @@ export default function TeamSpriteStrip({
   if (!list.length) return null;
 
   return (
-    <div className={cx("flex items-center gap-2", className)}>
+    <div className={cx("flex items-center justify-center gap-2", className)}>
       {list.map((p, idx) => {
         const species = p.species?.trim() || "Unknown";
         const url = getPokemonSpriteUrl(species) || "/sprites/pokemon/0.png";

@@ -30,7 +30,7 @@ electron.contextBridge.exposeInMainWorld("api", {
   },
   battles: {
     importReplays: (args) => electron.ipcRenderer.invoke("db:battles:importReplays", args),
-    list: (args) => electron.ipcRenderer.invoke("db:battles:list", args),
+    list: (args) => electron.ipcRenderer.invoke("battles:list", args),
     getDetails: (battleId) => electron.ipcRenderer.invoke("db:battles:getDetails", battleId)
   },
   settings: {

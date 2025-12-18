@@ -54,7 +54,7 @@ export function registerDbHandlers() {
       return importBattlesFromReplaysText(args);
     });
 
-    ipcMain.handle("db:battles:list", async (_evt, args?: { limit?: number; offset?: number }) => {
+    ipcMain.handle("battles:list", (_e, args) => {
       return listBattles(args);
     });
 

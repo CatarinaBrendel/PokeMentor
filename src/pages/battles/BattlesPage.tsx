@@ -23,21 +23,43 @@ function formatPlayedAt(ts: number | null) {
   return new Date(ts * 1000).toLocaleDateString();
 }
 
+function safeJson<T>(s: string | null | undefined, fallback: T): T {
+  try {
+    return s ? (JSON.parse(s) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function toUiRow(r: BattleListRow): BattleListItem {
+  const result: BattleListItem["result"] =
+    r.result === "win" || r.result === "loss" ? r.result : "unknown";
+
+  const format_ps = r.format_id ?? r.format_name ?? null;
+
+  const brought = safeJson<Array<{ species_name: string; is_lead: boolean }>>(
+    r.user_brought_json,
+    []
+  );
+
   return {
     id: r.id,
+    playedAtUnix: r.played_at,
     playedAt: formatPlayedAt(r.played_at),
-    result: (r.result ?? "loss") as "win" | "loss", // or handle null differently
+
+    result,
     opponentName: r.opponent_name ?? "Unknown",
-    format_ps: r.format_id ?? r.format_name,
+    format_ps,
     rated: r.is_rated === 1,
 
-    // placeholders for now
-    teamLabel: null,
-    teamVersionLabel: null,
-    matchConfidence: null,
-    matchMethod: null,
-    brought: [],
+    userSide: r.user_side, // <-- HERE
+
+    brought,
+
+    broughtUserSeen: r.user_brought_seen ?? null,
+    broughtUserExpected: r.user_brought_expected ?? null,
+    broughtOpponentSeen: r.opponent_brought_seen ?? null,
+    broughtOpponentExpected: r.opponent_brought_expected ?? null,
   };
 }
 
@@ -48,10 +70,10 @@ export function BattlesPage({ initialSelectedId }: Props) {
 
   const [selectedId, setSelectedId] = useState<string>(initialSelectedId ?? "");
   const [query, setQuery] = useState("");
-  const [resultFilter, setResultFilter] = useState<"all" | "win" | "loss">("all");
+  const [resultFilter, setResultFilter] = useState<"all" | "win" | "loss" | "unknown">("all");
   const [ratedOnly, setRatedOnly] = useState(false);
   const [formatFilter, setFormatFilter] = useState<string>("all");
-  const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
+  
   const [showImport, setShowImport] = useState(false);
 
   const [details, setDetails] = useState<BattleDetailsDto | null>(null);
@@ -71,6 +93,10 @@ export function BattlesPage({ initialSelectedId }: Props) {
       // IMPORTANT: this should return BattleListRow[] (your SQL query output)
       const dbRows = (await BattlesApi.list({ limit: 200, offset: 0 })) as BattleListRow[];
       const uiRows = dbRows.map(toUiRow);
+      console.log("[BattlesPage] sample row", dbRows[0]?.id, {
+        user_brought_seen: dbRows[0]?.user_brought_seen,
+        user_brought_json: dbRows[0]?.user_brought_json,
+      });
 
       setRows(uiRows);
       setSelectedId((prev) => prev || uiRows[0]?.id || "");
@@ -90,15 +116,16 @@ export function BattlesPage({ initialSelectedId }: Props) {
     return rows.filter((b) => {
       if (resultFilter !== "all" && b.result !== resultFilter) return false;
       if (ratedOnly && !b.rated) return false;
-      if (formatFilter !== "all" && (b.format_ps ?? "") !== formatFilter) return false;
+      if (formatFilter !== "all") {
+        const a = (b.format_ps ?? "").trim().toLowerCase();
+        const f = formatFilter.trim().toLowerCase();
+        if (a !== f) return false;
+      }
 
       if (!q) return true;
       const hay = [
         b.opponentName,
         b.format_ps ?? "",
-        b.teamLabel ?? "",
-        b.teamVersionLabel ?? "",
-        b.matchMethod ?? "",
       ]
         .join(" ")
         .toLowerCase();
@@ -108,67 +135,79 @@ export function BattlesPage({ initialSelectedId }: Props) {
   }, [rows, query, resultFilter, ratedOnly, formatFilter]);
 
   const selected = useMemo(
-    () => filtered.find((b) => b.id === selectedId) ?? filtered[0] ?? null,
-    [filtered, selectedId]
+    () => rows.find((b) => b.id === selectedId) ?? rows[0] ?? null,
+    [rows, selectedId]
   );
 
   useEffect(() => {
-    if (!filtered.length) return;
-    if (!filtered.some((b) => b.id === selectedId)) setSelectedId(filtered[0].id);
-  }, [filtered, selectedId]);
+    if (!rows.length) return;
 
-  useEffect(() => {
-  let cancelled = false;
-
-  async function load(): Promise<void> {
+    // initial selection
     if (!selectedId) {
-      setDetails(null);
+      setSelectedId(rows[0].id);
       return;
     }
 
-    setDetailsLoading(true);
-    try {
-      const dto = await BattlesApi.getDetails(selectedId);
-      if (!cancelled) setDetails(dto);
-    } catch (e) {
-      if (!cancelled) {
+    // selection no longer exists (e.g., deleted / refreshed list)
+    if (!rows.some((b) => b.id === selectedId)) {
+      setSelectedId(rows[0].id);
+    }
+  }, [rows, selectedId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load(): Promise<void> {
+      if (!selectedId) {
         setDetails(null);
-        window.__toast?.("Failed to load battle details.", "error");
+        return;
       }
-    } finally {
-      if (!cancelled) {
-        setDetailsLoading(false);
+
+      setDetails(null);
+      setDetailsLoading(true);
+      try {
+        const dto = await BattlesApi.getDetails(selectedId);
+        if (!cancelled) setDetails(dto);
+      } catch (e) {
+        if (!cancelled) {
+          setDetails(null);
+          window.__toast?.("Failed to load battle details.", "error");
+        }
+      } finally {
+        if (!cancelled) {
+          setDetailsLoading(false);
+        }
       }
     }
-  }
 
-  void load();
-  return () => {
-    cancelled = true;
-  };
-}, [selectedId]);
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
 
   const stats = useMemo(() => {
     const total = rows.length;
     const wins = rows.filter((r) => r.result === "win").length;
     const winrate = total ? Math.round((wins / total) * 100) : 0;
-    const sortedDates = rows.map((r) => r.playedAt).sort();
-    const lastPlayed = sortedDates.length ? sortedDates[sortedDates.length - 1] : "—";
+
+    const lastTs =
+      rows
+        .map((r) => r.playedAtUnix ?? 0)
+        .reduce((a, b) => Math.max(a, b), 0) || null;
+
+    const lastPlayed = lastTs ? formatPlayedAt(lastTs) : "—";
     return { total, winrate, lastPlayed };
   }, [rows]);
 
   const formats = useMemo(() => {
     const set = new Set<string>();
-    for (const r of rows) if (r.format_ps) set.add(r.format_ps);
-    return ["all", ...Array.from(set).sort()];
+    for (const r of rows) {
+      const f = (r.format_ps ?? "").trim();
+      if (f) set.add(f);
+    }
+    return ["all", ...Array.from(set).sort((a, b) => a.localeCompare(b))];
   }, [rows]);
-
-  function toggleExpanded(id: string) {
-    setExpandedIds((m) => {
-      const next = !m[id];
-      return next ? { [id]: true } : {};
-    });
-  }
 
   return (
     <div className="w-full p-6">
@@ -190,14 +229,19 @@ export function BattlesPage({ initialSelectedId }: Props) {
         />
 
         <div className="grid flex-1 grid-cols-12 gap-6 items-stretch min-h-0">
-          <BattlesListPanel
-            rows={filtered}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            expandedIds={expandedIds}
-            onToggleExpanded={toggleExpanded}
-          />
-          <BattleDetailsPanel battle={selected} details={details} />
+          <div className="col-span-4 min-h-0">
+            <BattlesListPanel
+              items={filtered}
+              selectedId={selectedId}
+              loading={loading}
+              error={error}
+              onSelect={setSelectedId}
+            />
+          </div>
+
+          <div className="col-span-8 min-h-0">
+            <BattleDetailsPanel battle={selected} details={details} loading={detailsLoading} />
+          </div>
         </div>
       </div>
 

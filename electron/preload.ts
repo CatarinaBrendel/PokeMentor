@@ -58,13 +58,13 @@ contextBridge.exposeInMainWorld("api", {
     importReplays: (args: { text: string }) =>
       ipcRenderer.invoke("db:battles:importReplays", args) as Promise<ImportBattlesResult>,
 
-    list: (args?: { limit?: number; offset?: number }) =>
-      ipcRenderer.invoke("db:battles:list", args),
-
+    list: (args?: { limit?: number; offset?: number }) => ipcRenderer.invoke("battles:list", args),
+    
     getDetails: (battleId: string) => ipcRenderer.invoke("db:battles:getDetails", battleId),
   },
   settings: {
     get: () => ipcRenderer.invoke("db:settings:get"),
+    
     update: (args: { showdown_username?: string | null }) =>
       ipcRenderer.invoke("db:settings:update", args),
   },

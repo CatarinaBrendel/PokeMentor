@@ -51,17 +51,53 @@ export type ImportReplaysResult = {
   rows: ImportReplaysResultRow[];
 };
 
+// src/features/battles/model/battles.types.ts
 export type BattleListRow = {
   id: string;
-  played_at: number | null;          // (or string, depending on what you store)
+
+  // stored as unix seconds (INTEGER) in your schema, may be null
+  played_at: number | null;
+
   format_id: string | null;
   format_name: string | null;
-  rated: 0 | 1;
+  is_rated: 0 | 1;
   winner_side: "p1" | "p2" | null;
 
   user_side: "p1" | "p2" | null;
   user_name: string | null;
+  p1_name: string | null;
+  p2_name: string | null;
 
-  opponentName: string | null;
+  opponent_name: string | null;
   result: "win" | "loss" | null;
+  brought_json: string | null;
+
+  user_brought_json: string | null;
+
+  user_brought_seen: number | null;
+  user_brought_expected: number | null;
+
+  opponent_brought_seen: number | null;
+  opponent_brought_expected: number | null;
+};
+
+export type BattleListItem = {
+  id: string;
+
+  playedAtUnix: number | null;
+  playedAt: string;
+
+  result: "win" | "loss" | "unknown";
+  opponentName: string;
+  format_ps: string | null;
+  rated: boolean;
+
+  userSide: "p1" | "p2" | null;
+
+  brought: Array<{ species_name: string; is_lead: boolean }>;
+
+  broughtUserSeen: number | null;
+  broughtUserExpected: number | null;
+  broughtOpponentSeen: number | null;
+  broughtOpponentExpected: number | null;
 };

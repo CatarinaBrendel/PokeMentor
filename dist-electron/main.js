@@ -687,48 +687,150 @@ async function fetchReplayJson(jsonUrl) {
   if (!(data == null ? void 0 : data.id) || !(data == null ? void 0 : data.log)) throw new Error("Unexpected JSON payload (missing id/log)");
   return data;
 }
+function uuid$1() {
+  return crypto.randomUUID();
+}
+function parseSwitchLike(rawLine) {
+  if (!rawLine.startsWith("|")) return null;
+  const parts = rawLine.split("|");
+  const lineType = parts[1];
+  if (lineType !== "switch" && lineType !== "drag" && lineType !== "replace") return null;
+  const who = parts[2] ?? "";
+  const details = parts[3] ?? "";
+  const m = who.match(/^(p[12][ab]):/);
+  if (!m) return null;
+  const position = m[1];
+  const side = position.slice(0, 2);
+  const species = (details.split(",")[0] ?? "").trim();
+  if (!species) return null;
+  return { position, side, species };
+}
+function deriveBroughtFromEvents(db2, battleId) {
+  const events = db2.prepare(
+    `
+    SELECT event_index, turn_num, raw_line
+    FROM battle_events
+    WHERE battle_id = ?
+      AND line_type IN ('switch','drag','replace')
+    ORDER BY event_index ASC
+    `
+  ).all(battleId);
+  if (events.length === 0) return { insertedInstances: 0, insertedBrought: 0 };
+  const broughtBySide = { p1: /* @__PURE__ */ new Set(), p2: /* @__PURE__ */ new Set() };
+  const firstByPos = /* @__PURE__ */ new Map();
+  for (const e of events) {
+    const parsed = parseSwitchLike(e.raw_line);
+    if (!parsed) continue;
+    broughtBySide[parsed.side].add(parsed.species);
+    if (!firstByPos.has(parsed.position)) {
+      firstByPos.set(parsed.position, { species: parsed.species, turn_num: e.turn_num, event_index: e.event_index });
+    }
+  }
+  const leadKey = /* @__PURE__ */ new Set();
+  for (const [pos, info] of firstByPos.entries()) {
+    const side = pos.slice(0, 2);
+    leadKey.add(`${side}|${info.species}`);
+  }
+  const getInstance = db2.prepare(`
+    SELECT id
+    FROM battle_pokemon_instances
+    WHERE battle_id = ? AND side = ? AND species_name = ?
+    LIMIT 1
+  `);
+  const insertInstance = db2.prepare(`
+    INSERT INTO battle_pokemon_instances (id, battle_id, side, species_name, shiny)
+    VALUES (?, ?, ?, ?, 0)
+  `);
+  const insertBrought = db2.prepare(`
+    INSERT OR IGNORE INTO battle_brought_pokemon (battle_id, side, pokemon_instance_id, is_lead, fainted)
+    VALUES (?, ?, ?, ?, 0)
+  `);
+  const updateLead = db2.prepare(`
+    UPDATE battle_brought_pokemon
+    SET is_lead = CASE WHEN is_lead = 1 THEN 1 ELSE ? END
+    WHERE battle_id = ? AND side = ? AND pokemon_instance_id = ?
+  `);
+  let insertedInstances = 0;
+  let insertedBrought = 0;
+  db2.transaction(() => {
+    for (const side of ["p1", "p2"]) {
+      for (const species of broughtBySide[side]) {
+        let inst = getInstance.get(battleId, side, species);
+        if (!inst) {
+          const id = uuid$1();
+          insertInstance.run(id, battleId, side, species);
+          insertedInstances += 1;
+          inst = { id };
+        }
+        const isLead = leadKey.has(`${side}|${species}`) ? 1 : 0;
+        const info = insertBrought.run(battleId, side, inst.id, isLead);
+        if (typeof (info == null ? void 0 : info.changes) === "number" && info.changes > 0) {
+          insertedBrought += info.changes;
+        } else {
+          if (isLead) updateLead.run(1, battleId, side, inst.id);
+        }
+      }
+    }
+  })();
+  return { insertedInstances, insertedBrought };
+}
 function uuid() {
   return crypto.randomUUID();
 }
-function getSetting(db2, key) {
+function nowUnix() {
+  return Math.floor(Date.now() / 1e3);
+}
+function getSetting$1(db2, key) {
   const row = db2.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
   return (row == null ? void 0 : row.value) ?? null;
 }
-function normalizeShowdownName$1(name) {
+function normalizeShowdownName$2(name) {
   return name.trim().replace(/^☆+/, "").replace(/\s+/g, "").toLowerCase();
 }
 function parseLogLines(rawLog) {
   return rawLog.split("\n").map((s) => s.trimEnd()).filter((s) => s.length > 0);
 }
-function parsePipeLine(line) {
+function parsePipeLine$1(line) {
   const parts = line.split("|");
   if (parts[0] === "") parts.shift();
   return parts;
 }
+function toFiniteNumber(v) {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
 function firstTUnix(lines) {
   for (const l of lines) {
-    const parts = parsePipeLine(l);
-    if (parts[0] === "t:" && parts[1]) {
-      const n = Number(parts[1]);
-      if (Number.isFinite(n)) return n;
-    }
+    const parts = parsePipeLine$1(l);
+    if (parts[0] === "t:" && parts[1]) return toFiniteNumber(parts[1]);
   }
   return null;
 }
 function hasRatedLine(lines) {
   return lines.some((l) => l === "|rated|" || l.startsWith("|rated|"));
 }
+function extractGenAndGameType(lines) {
+  let gen = null;
+  let gameType = null;
+  for (const l of lines) {
+    const p = parsePipeLine$1(l);
+    if (p[0] === "gen") gen = toFiniteNumber(p[1]);
+    if (p[0] === "gametype") gameType = p[1] ?? null;
+    if (gen != null && gameType != null) break;
+  }
+  return { gen, gameType };
+}
 function findWinner(lines) {
   let winnerName = null;
   for (const l of lines) {
-    const parts = parsePipeLine(l);
+    const parts = parsePipeLine$1(l);
     if (parts[0] === "win" && parts[1]) winnerName = parts[1];
   }
   if (!winnerName) return { winnerName: null, winnerSide: null };
   let p1 = null;
   let p2 = null;
   for (const l of lines) {
-    const parts = parsePipeLine(l);
+    const parts = parsePipeLine$1(l);
     if (parts[0] === "player") {
       const side = parts[1];
       const name = parts[2];
@@ -739,203 +841,219 @@ function findWinner(lines) {
   const winnerSide = winnerName === p1 ? "p1" : winnerName === p2 ? "p2" : null;
   return { winnerName, winnerSide };
 }
+function parsePreviewMon(rawText) {
+  const bits = rawText.split(",").map((s) => s.trim()).filter(Boolean);
+  const species = (bits[0] ?? "").trim();
+  const levelToken = bits.find((b) => /^L\d+$/i.test(b));
+  const level = levelToken ? toFiniteNumber(levelToken.slice(1)) : null;
+  const gender = bits.includes("M") ? "M" : bits.includes("F") ? "F" : null;
+  return { species, level, gender };
+}
+function parseShowteamEntries(blob) {
+  return blob.split("]").map((x) => x.trim()).filter(Boolean);
+}
+function parseShowteamEntry(entry) {
+  var _a;
+  const fields = entry.split("|");
+  const species = (fields[0] ?? "").trim();
+  const nickname = fields[1] ? fields[1] : null;
+  const item = fields[3] ? fields[3] : null;
+  const ability = fields[4] ? fields[4] : null;
+  const movesCsv = fields[5] ?? "";
+  const moves = movesCsv.split(",").map((m) => m.trim()).filter(Boolean);
+  const genderRaw = fields[8];
+  const gender = genderRaw === "M" || genderRaw === "F" ? genderRaw : null;
+  const level = fields[11] ? toFiniteNumber(fields[11]) : null;
+  const tail = fields[12] ?? "";
+  const tera = tail.includes(",") ? ((_a = tail.split(",").pop()) == null ? void 0 : _a.trim()) ?? null : null;
+  return { species, nickname, item, ability, moves, gender, level, tera };
+}
+function makeIsUserFn(db2) {
+  const showdownUsername = getSetting$1(db2, "showdown_username");
+  const showdownUsernameNorm = showdownUsername ? normalizeShowdownName$2(showdownUsername) : null;
+  return (playerName) => {
+    if (!showdownUsernameNorm) return 0;
+    return normalizeShowdownName$2(playerName) === showdownUsernameNorm ? 1 : 0;
+  };
+}
+function prepareStatements(db2) {
+  return {
+    insertBattle: db2.prepare(`
+      INSERT INTO battles (
+        id, replay_id, replay_url, replay_json_url,
+        format_id, format_name, gen, game_type,
+        upload_time, played_at, views, rating, is_private, is_rated,
+        winner_side, winner_name,
+        raw_json, raw_log,
+        created_at
+      ) VALUES (
+        @id, @replay_id, @replay_url, @replay_json_url,
+        @format_id, @format_name, @gen, @game_type,
+        @upload_time, @played_at, @views, @rating, @is_private, @is_rated,
+        @winner_side, @winner_name,
+        @raw_json, @raw_log,
+        @created_at
+      );
+    `),
+    insertSide: db2.prepare(`
+      INSERT INTO battle_sides (battle_id, side, is_user, player_name, avatar, rating)
+      VALUES (@battle_id, @side, @is_user, @player_name, @avatar, @rating);
+    `),
+    insertPreview: db2.prepare(`
+      INSERT INTO battle_preview_pokemon (battle_id, side, slot_index, species_name, level, gender, shiny, raw_text)
+      VALUES (@battle_id, @side, @slot_index, @species_name, @level, @gender, @shiny, @raw_text);
+    `),
+    insertRevealed: db2.prepare(`
+      INSERT INTO battle_revealed_sets (
+        battle_id, side, species_name, nickname, item_name, ability_name, tera_type, level, gender, shiny, moves_json, raw_fragment
+      ) VALUES (
+        @battle_id, @side, @species_name, @nickname, @item_name, @ability_name, @tera_type, @level, @gender, @shiny, @moves_json, @raw_fragment
+      );
+    `),
+    insertEvent: db2.prepare(`
+      INSERT INTO battle_events (
+        battle_id, event_index, turn_num, t_unix,
+        line_type, raw_line,
+        actor_ref, actor_name, target_ref, target_name,
+        move_name, item_name, ability_name,
+        condition_text, value_text, value_num,
+        flags_json, payload_json
+      ) VALUES (
+        @battle_id, @event_index, @turn_num, @t_unix,
+        @line_type, @raw_line,
+        @actor_ref, @actor_name, @target_ref, @target_name,
+        @move_name, @item_name, @ability_name,
+        @condition_text, @value_text, @value_num,
+        @flags_json, @payload_json
+      );
+    `)
+  };
+}
 function ingestReplayJson(db2, replayUrl, replayJsonUrl, json) {
-  var _a, _b;
-  const now = Math.floor(Date.now() / 1e3);
+  const now = nowUnix();
   const battleId = uuid();
   const lines = parseLogLines(json.log ?? "");
-  const playedAt = firstTUnix(lines) ?? json.uploadtime ?? now;
+  const playedAt = firstTUnix(lines) ?? (json.uploadtime ?? now);
   const isRated = hasRatedLine(lines) ? 1 : 0;
   const { winnerName, winnerSide } = findWinner(lines);
-  const insertBattle = db2.prepare(`
-    INSERT INTO battles (
-      id, replay_id, replay_url, replay_json_url,
-      format_id, format_name, gen, game_type,
-      upload_time, played_at, views, rating, is_private, is_rated,
-      winner_side, winner_name,
-      raw_json, raw_log,
-      created_at
-    ) VALUES (
-      @id, @replay_id, @replay_url, @replay_json_url,
-      @format_id, @format_name, @gen, @game_type,
-      @upload_time, @played_at, @views, @rating, @is_private, @is_rated,
-      @winner_side, @winner_name,
-      @raw_json, @raw_log,
-      @created_at
-    );
-  `);
-  const insertSide = db2.prepare(`
-    INSERT INTO battle_sides (battle_id, side, is_user, player_name, avatar, rating)
-    VALUES (@battle_id, @side, @is_user, @player_name, @avatar, @rating);
-  `);
-  const insertPreview = db2.prepare(`
-    INSERT INTO battle_preview_pokemon (battle_id, side, slot_index, species_name, level, gender, shiny, raw_text)
-    VALUES (@battle_id, @side, @slot_index, @species_name, @level, @gender, @shiny, @raw_text);
-  `);
-  const insertRevealed = db2.prepare(`
-    INSERT INTO battle_revealed_sets (
-      battle_id, side, species_name, nickname, item_name, ability_name, tera_type, level, gender, shiny, moves_json, raw_fragment
-    ) VALUES (
-      @battle_id, @side, @species_name, @nickname, @item_name, @ability_name, @tera_type, @level, @gender, @shiny, @moves_json, @raw_fragment
-    );
-  `);
-  const insertEvent = db2.prepare(`
-    INSERT INTO battle_events (
-      battle_id, event_index, turn_num, t_unix,
-      line_type, raw_line,
-      actor_ref, actor_name, target_ref, target_name,
-      move_name, item_name, ability_name,
-      condition_text, value_text, value_num,
-      flags_json, payload_json
-    ) VALUES (
-      @battle_id, @event_index, @turn_num, @t_unix,
-      @line_type, @raw_line,
-      @actor_ref, @actor_name, @target_ref, @target_name,
-      @move_name, @item_name, @ability_name,
-      @condition_text, @value_text, @value_num,
-      @flags_json, @payload_json
-    );
-  `);
-  let gen = null;
-  let gameType = null;
-  for (const l of lines) {
-    const p = parsePipeLine(l);
-    if (p[0] === "gen" && p[1]) gen = Number(p[1]);
-    if (p[0] === "gametype" && p[1]) gameType = p[1];
-  }
-  insertBattle.run({
-    id: battleId,
-    replay_id: json.id,
-    replay_url: replayUrl,
-    replay_json_url: replayJsonUrl,
-    format_id: json.formatid ?? null,
-    format_name: json.format ?? null,
-    gen: Number.isFinite(gen) ? gen : null,
-    game_type: gameType,
-    upload_time: json.uploadtime ?? null,
-    played_at: playedAt ?? null,
-    views: json.views ?? null,
-    rating: json.rating ?? null,
-    is_private: json.private ? 1 : 0,
-    is_rated: isRated,
-    winner_side: winnerSide,
-    winner_name: winnerName,
-    raw_json: JSON.stringify(json),
-    raw_log: json.log ?? "",
-    created_at: now
-  });
+  const { gen, gameType } = extractGenAndGameType(lines);
+  const isUser = makeIsUserFn(db2);
+  const stmts = prepareStatements(db2);
   let eventIndex = 0;
   let currentTurn = null;
   let currentT = null;
   const previewSlotCounter = { p1: 0, p2: 0 };
-  const showdownUsername = getSetting(db2, "showdown_username");
-  const showdownUsernameNorm = showdownUsername ? normalizeShowdownName$1(showdownUsername) : null;
-  function computeIsUser(playerName) {
-    if (!showdownUsernameNorm) return 0;
-    return normalizeShowdownName$1(playerName) === showdownUsernameNorm ? 1 : 0;
-  }
-  for (const l of lines) {
-    const parts = parsePipeLine(l);
-    const type = parts[0] ?? "unknown";
-    if (type === "t:" && parts[1]) {
-      const n = Number(parts[1]);
-      if (Number.isFinite(n)) currentT = n;
-    }
-    if (type === "turn" && parts[1]) {
-      const n = Number(parts[1]);
-      if (Number.isFinite(n)) currentTurn = n;
-    }
-    if (type === "player") {
-      const side = parts[1];
-      const name = parts[2] ?? "";
-      const avatar = parts[3] ?? null;
-      const rating = parts[4] ? Number(parts[4]) : null;
-      if ((side === "p1" || side === "p2") && name) {
-        insertSide.run({
-          battle_id: battleId,
-          side,
-          is_user: computeIsUser(name),
-          player_name: name,
-          avatar,
-          rating: Number.isFinite(rating) ? rating : null
-        });
-      }
-    }
-    if (type === "poke") {
-      const side = parts[1];
-      const rawText = parts[2] ?? "";
-      if (side === "p1" || side === "p2") {
-        previewSlotCounter[side] += 1;
-        const slotIndex = previewSlotCounter[side];
-        const bits = rawText.split(",").map((s) => s.trim());
-        const species = (bits[0] ?? "").trim();
-        const level = bits.find((b) => b.startsWith("L")) ? Number((_a = bits.find((b) => b.startsWith("L"))) == null ? void 0 : _a.slice(1)) : null;
-        const gender = bits.includes("M") ? "M" : bits.includes("F") ? "F" : null;
-        insertPreview.run({
-          battle_id: battleId,
-          side,
-          slot_index: slotIndex,
-          species_name: species,
-          level: Number.isFinite(level) ? level : null,
-          gender,
-          shiny: 0,
-          raw_text: rawText
-        });
-      }
-    }
-    if (type === "showteam") {
-      const side = parts[1];
-      const blob = parts[2] ?? "";
-      const entries = blob.split("]").map((x) => x.trim()).filter(Boolean);
-      for (const entry of entries) {
-        const fields = entry.split("|");
-        const species = fields[0] ?? "";
-        const nickname = fields[1] || null;
-        const item = fields[3] || null;
-        const ability = fields[4] || null;
-        const movesCsv = fields[5] || "";
-        const gender = fields[8] === "M" || fields[8] === "F" ? fields[8] : null;
-        const level = fields[11] ? Number(fields[11]) : null;
-        const tail = fields[12] ?? "";
-        const teraGuess = tail.includes(",") ? (_b = tail.split(",").pop()) == null ? void 0 : _b.trim() : null;
-        const moves = movesCsv.split(",").map((m) => m.trim()).filter(Boolean);
-        insertRevealed.run({
-          battle_id: battleId,
-          side,
-          species_name: species,
-          nickname,
-          item_name: item,
-          ability_name: ability,
-          tera_type: teraGuess || null,
-          level: Number.isFinite(level) ? level : null,
-          gender,
-          shiny: 0,
-          moves_json: JSON.stringify(moves),
-          raw_fragment: entry
-        });
-      }
-    }
-    insertEvent.run({
-      battle_id: battleId,
-      event_index: eventIndex++,
-      turn_num: currentTurn,
-      t_unix: currentT,
-      line_type: type,
-      raw_line: l,
-      actor_ref: null,
-      actor_name: null,
-      target_ref: null,
-      target_name: null,
-      move_name: type === "move" ? parts[2] ?? null : null,
-      item_name: null,
-      ability_name: null,
-      condition_text: null,
-      value_text: null,
-      value_num: null,
-      flags_json: "{}",
-      payload_json: "{}"
+  db2.transaction(() => {
+    stmts.insertBattle.run({
+      id: battleId,
+      replay_id: json.id,
+      replay_url: replayUrl,
+      replay_json_url: replayJsonUrl,
+      format_id: json.formatid ?? null,
+      format_name: json.format ?? null,
+      gen,
+      game_type: gameType,
+      upload_time: json.uploadtime ?? null,
+      played_at: playedAt ?? null,
+      views: json.views ?? null,
+      rating: json.rating ?? null,
+      is_private: json.private ? 1 : 0,
+      is_rated: isRated,
+      winner_side: winnerSide,
+      winner_name: winnerName,
+      raw_json: JSON.stringify(json),
+      raw_log: json.log ?? "",
+      created_at: now
     });
-  }
+    for (const raw of lines) {
+      const parts = parsePipeLine$1(raw);
+      const type = parts[0] ?? "unknown";
+      if (type === "t:") currentT = toFiniteNumber(parts[1]);
+      if (type === "turn") currentTurn = toFiniteNumber(parts[1]);
+      if (type === "player") {
+        const side = parts[1];
+        const name = parts[2] ?? "";
+        const avatar = parts[3] ?? null;
+        const rating = toFiniteNumber(parts[4]);
+        if ((side === "p1" || side === "p2") && name) {
+          stmts.insertSide.run({
+            battle_id: battleId,
+            side,
+            is_user: isUser(name),
+            player_name: name,
+            avatar,
+            rating
+          });
+        }
+      }
+      if (type === "poke") {
+        const side = parts[1];
+        const rawText = parts[2] ?? "";
+        if (side === "p1" || side === "p2") {
+          previewSlotCounter[side] += 1;
+          const slotIndex = previewSlotCounter[side];
+          const { species, level, gender } = parsePreviewMon(rawText);
+          if (species) {
+            stmts.insertPreview.run({
+              battle_id: battleId,
+              side,
+              slot_index: slotIndex,
+              species_name: species,
+              level,
+              gender,
+              shiny: 0,
+              raw_text: rawText
+            });
+          }
+        }
+      }
+      if (type === "showteam") {
+        const side = parts[1];
+        const blob = parts[2] ?? "";
+        if (side === "p1" || side === "p2") {
+          for (const entry of parseShowteamEntries(blob)) {
+            const parsed = parseShowteamEntry(entry);
+            if (!parsed.species) continue;
+            stmts.insertRevealed.run({
+              battle_id: battleId,
+              side,
+              species_name: parsed.species,
+              nickname: parsed.nickname,
+              item_name: parsed.item,
+              ability_name: parsed.ability,
+              tera_type: parsed.tera,
+              level: parsed.level,
+              gender: parsed.gender,
+              shiny: 0,
+              moves_json: JSON.stringify(parsed.moves),
+              raw_fragment: entry
+            });
+          }
+        }
+      }
+      stmts.insertEvent.run({
+        battle_id: battleId,
+        event_index: eventIndex++,
+        turn_num: currentTurn,
+        t_unix: currentT,
+        line_type: type,
+        raw_line: raw,
+        actor_ref: null,
+        actor_name: null,
+        target_ref: null,
+        target_name: null,
+        move_name: type === "move" ? parts[2] ?? null : null,
+        item_name: null,
+        ability_name: null,
+        condition_text: null,
+        value_text: null,
+        value_num: null,
+        flags_json: "{}",
+        payload_json: "{}"
+      });
+    }
+  })();
+  deriveBroughtFromEvents(db2, battleId);
   return { battleId };
 }
 async function importBattlesFromReplaysText(args) {
@@ -972,11 +1090,79 @@ async function importBattlesFromReplaysText(args) {
   }
   return { okCount, failCount, rows };
 }
+function getSetting(db2, key) {
+  const row = db2.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
+  return (row == null ? void 0 : row.value) ?? null;
+}
+function normalizeShowdownName$1(name) {
+  return name.trim().replace(/^☆+/, "").replace(/\s+/g, "").toLowerCase();
+}
+function parsePipeLine(raw) {
+  const parts = raw.split("|");
+  if (parts[0] === "") parts.shift();
+  return parts;
+}
+function speciesFromDetails(details) {
+  return (details.split(",")[0] ?? "").trim();
+}
+function sideFromActor(actor) {
+  const s = actor.slice(0, 2);
+  return s === "p1" || s === "p2" ? s : null;
+}
+function deriveForBattle(events, gameType) {
+  let p1_expected = null;
+  let p2_expected = null;
+  const p1SeenOrder = [];
+  const p2SeenOrder = [];
+  const p1SeenSet = /* @__PURE__ */ new Set();
+  const p2SeenSet = /* @__PURE__ */ new Set();
+  for (const e of events) {
+    const parts = parsePipeLine(e.raw_line);
+    const t = parts[0] ?? "";
+    if (t === "teamsize") {
+      const side = parts[1];
+      const n = parts[2] ? Number(parts[2]) : NaN;
+      if ((side === "p1" || side === "p2") && Number.isFinite(n)) {
+        if (side === "p1") p1_expected = n;
+        if (side === "p2") p2_expected = n;
+      }
+      continue;
+    }
+    if (t === "switch" || t === "drag" || t === "replace") {
+      const actor = parts[1] ?? "";
+      const details = parts[2] ?? "";
+      const side = sideFromActor(actor);
+      const species = speciesFromDetails(details);
+      if (!side || !species) continue;
+      if (side === "p1") {
+        if (!p1SeenSet.has(species)) {
+          p1SeenSet.add(species);
+          p1SeenOrder.push(species);
+        }
+      } else {
+        if (!p2SeenSet.has(species)) {
+          p2SeenSet.add(species);
+          p2SeenOrder.push(species);
+        }
+      }
+    }
+  }
+  const leadCount = gameType === "doubles" ? 2 : 1;
+  return {
+    p1_expected,
+    p2_expected,
+    p1_seen: p1SeenOrder.map((s, idx) => ({ species_name: s, is_lead: idx < leadCount })),
+    p2_seen: p2SeenOrder.map((s, idx) => ({ species_name: s, is_lead: idx < leadCount }))
+  };
+}
+const MAX_IDS_PER_CHUNK = 900;
 function listBattles(args = {}) {
   const db2 = getDb();
   const limit = Math.min(Math.max(args.limit ?? 200, 1), 1e3);
   const offset = Math.max(args.offset ?? 0, 0);
-  const stmt = db2.prepare(`
+  const showdownUsername = getSetting(db2, "showdown_username");
+  showdownUsername ? normalizeShowdownName$1(showdownUsername) : null;
+  const baseStmt = db2.prepare(`
     WITH sides AS (
       SELECT
         battle_id,
@@ -994,6 +1180,7 @@ function listBattles(args = {}) {
       b.format_name,
       b.is_rated,
       b.winner_side,
+      b.game_type,
 
       s.user_side,
       s.user_name,
@@ -1003,7 +1190,6 @@ function listBattles(args = {}) {
       CASE
         WHEN s.user_side = 'p1' THEN s.p2_name
         WHEN s.user_side = 'p2' THEN s.p1_name
-        -- fallback if user_side missing: prefer p2 if p1 exists, else p1
         ELSE COALESCE(s.p2_name, s.p1_name)
       END AS opponent_name,
 
@@ -1019,7 +1205,45 @@ function listBattles(args = {}) {
     ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
     LIMIT ? OFFSET ?;
   `);
-  return stmt.all(limit, offset);
+  const base = baseStmt.all(limit, offset);
+  if (base.length === 0) return [];
+  const byBattle = /* @__PURE__ */ new Map();
+  for (let i = 0; i < base.length; i += MAX_IDS_PER_CHUNK) {
+    const chunk = base.slice(i, i + MAX_IDS_PER_CHUNK);
+    const ids = chunk.map((r) => r.id);
+    const placeholders = ids.map(() => "?").join(",");
+    const evStmt = db2.prepare(`
+      SELECT battle_id, event_index, line_type, raw_line
+      FROM battle_events
+      WHERE battle_id IN (${placeholders})
+        AND line_type IN ('teamsize','switch','drag','replace')
+      ORDER BY battle_id ASC, event_index ASC;
+    `);
+    const evRows = evStmt.all(...ids);
+    for (const e of evRows) {
+      const arr = byBattle.get(e.battle_id);
+      if (arr) arr.push(e);
+      else byBattle.set(e.battle_id, [e]);
+    }
+  }
+  return base.map((row) => {
+    const events = byBattle.get(row.id) ?? [];
+    const d = deriveForBattle(events, row.game_type ?? null);
+    const userSide = row.user_side;
+    const userSeen = userSide === "p1" ? d.p1_seen : userSide === "p2" ? d.p2_seen : [];
+    const user_brought_json = userSide && userSeen.length > 0 ? JSON.stringify(userSeen) : null;
+    const user_brought_seen = userSide ? userSeen.length || null : null;
+    const user_brought_expected = userSide === "p1" ? d.p1_expected : userSide === "p2" ? d.p2_expected : null;
+    return {
+      ...row,
+      user_brought_json,
+      user_brought_seen,
+      user_brought_expected
+      // optional: keep these if your UI still displays Opp counts
+      // opponent_brought_seen: null,
+      // opponent_brought_expected: null,
+    };
+  });
 }
 function getBattleDetails(battleId) {
   const db2 = getDb();
@@ -1047,11 +1271,11 @@ function getBattleDetails(battleId) {
     ORDER BY side ASC, species_name ASC
   `).all(battleId);
   const events = db2.prepare(`
-  SELECT event_index, turn_num, line_type, raw_line
-  FROM battle_events
-  WHERE battle_id = ?
-  ORDER BY event_index ASC
-`).all(battleId);
+    SELECT event_index, turn_num, line_type, raw_line
+    FROM battle_events
+    WHERE battle_id = ?
+    ORDER BY event_index ASC
+  `).all(battleId);
   const revealed = revealedRaw.map((r) => ({
     side: r.side,
     species_name: r.species_name,
@@ -1173,7 +1397,7 @@ function registerDbHandlers() {
   ipcMain.handle("db:battles:importReplays", async (_evt, args) => {
     return importBattlesFromReplaysText(args);
   });
-  ipcMain.handle("db:battles:list", async (_evt, args) => {
+  ipcMain.handle("battles:list", (_e, args) => {
     return listBattles(args);
   });
   ipcMain.handle("db:settings:get", async () => {

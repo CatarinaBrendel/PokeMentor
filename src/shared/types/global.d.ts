@@ -43,7 +43,7 @@ declare global {
       };
       battles: {
         importReplays: (args: ImportReplaysArgs) => Promise<ImportReplaysResult>;
-        list: (args?: ListBattlesArgs) => Promise<BattleListRow[]>;
+        list: (args?: { limit?: number; offset?: number }) => Promise<any>;
         getDetails: (battleID: string) => Promise<BattleDetailsDto>
       };
       settings: {

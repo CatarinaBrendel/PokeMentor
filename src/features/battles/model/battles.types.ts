@@ -1,8 +1,3 @@
-/** Minimal sprite strip item used by UI components. */
-export type SpeciesRef = {
-  species: string;
-};
-
 /** Active team display in the filter bar/header. */
 export type ActiveTeamSummary = {
   name: string;
@@ -58,33 +53,47 @@ export type BattleDbRow = {
   p2_name: string | null;
 };
 
-export type BattleListItem = {
-  id: string;
-  playedAt: string; // formatted string for UI
-  result: "win" | "loss";
-  opponentName: string | null;
-  format_ps?: string | null;
-  rated?: boolean;
-  teamLabel?: string | null;
-  teamVersionLabel?: string | null;
-  matchConfidence?: number | null;
-  matchMethod?: string | null;
-  brought?: Array<{ species: string; iconText?: string }>;
-};
-
 export type BattleListRow = {
   id: string;
-  played_at: number | null; // unix seconds
+  played_at: number | null;
+
   format_id: string | null;
   format_name: string | null;
   is_rated: 0 | 1;
   winner_side: "p1" | "p2" | null;
 
-  // convenience for UI
-  p1_name: string | null;
-  p2_name: string | null;
-  opponent_name: string | null; // computed for “your side” later, can be null for now
+  user_side: "p1" | "p2" | null;
+  opponent_name: string | null;
   result: "win" | "loss" | null;
+
+  brought_json: string | null;
+
+  user_brought_json: string | null;
+  user_brought_seen: number | null;
+  user_brought_expected: number | null;
+  
+  opponent_brought_seen: number | null;
+  opponent_brought_expected: number | null;
+};
+
+export type BattleListItem = {
+  id: string;
+  playedAtUnix: number | null;
+  playedAt: string;
+
+  result: "win" | "loss" | "unknown";
+  opponentName: string;
+  format_ps: string | null;
+  rated: boolean;
+
+  userSide: "p1" | "p2" | null;
+
+  brought: Array<{ species_name: string; is_lead: boolean }>;
+
+  broughtUserSeen: number | null;
+  broughtUserExpected: number | null;
+  broughtOpponentSeen: number | null;
+  broughtOpponentExpected: number | null;
 };
 
 export type BattleDetailsDto = {
@@ -97,6 +106,11 @@ export type BattleDetailsDto = {
     played_at: number | null;
     is_rated: 0 | 1;
     winner_side: "p1" | "p2" | null;
+
+    team_label?: string | null;
+    team_version_label?: string | null;
+    match_confidence?: number | null;
+    match_method?: string | null;
   };
   sides: Array<{
     side: "p1" | "p2";
@@ -126,26 +140,3 @@ export type BattleDetailsDto = {
     raw_line: string;
   }>;
 };
-
-export function battleListRowToItem(row: BattleListRow): BattleListItem {
-  const playedAt =
-    row.played_at != null ? new Date(row.played_at * 1000).toLocaleDateString() : "—";
-
-  const opponentName = row.opponent_name?.trim() || "Unknown";
-
-  const result: "win" | "loss" = row.result === "win" ? "win" : "loss";
-
-  return {
-    id: row.id,
-    playedAt,
-    result,
-    opponentName,
-    format_ps: row.format_id ?? row.format_name ?? null,
-    rated: row.is_rated === 1,
-    teamLabel: null,
-    teamVersionLabel: null,
-    matchConfidence: null,
-    matchMethod: null,
-    brought: [],
-  };
-}

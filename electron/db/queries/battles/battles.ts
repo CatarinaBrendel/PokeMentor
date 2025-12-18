@@ -1,54 +1,117 @@
 import { getDb } from "../../index";
-import { BattleListRow, BattleDetailsDto } from "./battles.types";
-
-export type BattleRow = {
-  id: string;
-  played_at: string;
-  format: string | null;
-  result: string | null;
-};
+import type { BattleListRow, BattleDetailsDto } from "./battles.types";
+import type BetterSqlite3 from "better-sqlite3";
 
 export type ListBattlesArgs = {
   limit?: number;
   offset?: number;
 };
 
-export type InsertBattleArgs = {
-  id: string;
-  played_at: string; // ISO string
-  format?: string;
-  result?: string;
-  raw_log?: string;
+type EventRow = {
+  battle_id: string;
+  event_index: number;
+  line_type: string;
+  raw_line: string;
 };
 
-export function insertBattle(args: InsertBattleArgs) {
-  const db = getDb();
+type Derived = {
+  p1_expected: number | null;
+  p2_expected: number | null;
+  p1_seen: Array<{ species_name: string; is_lead: boolean }>;
+  p2_seen: Array<{ species_name: string; is_lead: boolean }>;
+};
 
-  const stmt = db.prepare(`
-    INSERT INTO battles (id, played_at, format, result, raw_log)
-    VALUES (@id, @played_at, @format, @result, @raw_log)
-    ON CONFLICT(id) DO UPDATE SET
-      played_at=excluded.played_at,
-      format=excluded.format,
-      result=excluded.result,
-      raw_log=excluded.raw_log
-  `);
-
-  stmt.run({
-    id: args.id,
-    played_at: args.played_at,
-    format: args.format ?? null,
-    result: args.result ?? null,
-    raw_log: args.raw_log ?? null,
-  });
+function getSetting(db: BetterSqlite3.Database, key: string): string | null {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key) as
+    | { value: string }
+    | undefined;
+  return row?.value ?? null;
 }
+
+function normalizeShowdownName(name: string): string {
+  return name.trim().replace(/^☆+/, "").replace(/\s+/g, "").toLowerCase();
+}
+
+function parsePipeLine(raw: string): string[] {
+  const parts = raw.split("|");
+  if (parts[0] === "") parts.shift();
+  return parts;
+}
+
+function speciesFromDetails(details: string): string {
+  return (details.split(",")[0] ?? "").trim();
+}
+
+function sideFromActor(actor: string): "p1" | "p2" | null {
+  const s = actor.slice(0, 2);
+  return s === "p1" || s === "p2" ? s : null;
+}
+
+function deriveForBattle(events: EventRow[], gameType: string | null): Derived {
+  let p1_expected: number | null = null;
+  let p2_expected: number | null = null;
+
+  const p1SeenOrder: string[] = [];
+  const p2SeenOrder: string[] = [];
+  const p1SeenSet = new Set<string>();
+  const p2SeenSet = new Set<string>();
+
+  for (const e of events) {
+    const parts = parsePipeLine(e.raw_line);
+    const t = parts[0] ?? "";
+
+    if (t === "teamsize") {
+      const side = parts[1] as "p1" | "p2" | undefined;
+      const n = parts[2] ? Number(parts[2]) : NaN;
+      if ((side === "p1" || side === "p2") && Number.isFinite(n)) {
+        if (side === "p1") p1_expected = n;
+        if (side === "p2") p2_expected = n;
+      }
+      continue;
+    }
+
+    if (t === "switch" || t === "drag" || t === "replace") {
+      const actor = parts[1] ?? "";
+      const details = parts[2] ?? "";
+      const side = sideFromActor(actor);
+      const species = speciesFromDetails(details);
+      if (!side || !species) continue;
+
+      if (side === "p1") {
+        if (!p1SeenSet.has(species)) {
+          p1SeenSet.add(species);
+          p1SeenOrder.push(species);
+        }
+      } else {
+        if (!p2SeenSet.has(species)) {
+          p2SeenSet.add(species);
+          p2SeenOrder.push(species);
+        }
+      }
+    }
+  }
+
+  const leadCount = gameType === "doubles" ? 2 : 1;
+
+  return {
+    p1_expected,
+    p2_expected,
+    p1_seen: p1SeenOrder.map((s, idx) => ({ species_name: s, is_lead: idx < leadCount })),
+    p2_seen: p2SeenOrder.map((s, idx) => ({ species_name: s, is_lead: idx < leadCount })),
+  };
+}
+
+const MAX_IDS_PER_CHUNK = 900;
 
 export function listBattles(args: ListBattlesArgs = {}): BattleListRow[] {
   const db = getDb();
   const limit = Math.min(Math.max(args.limit ?? 200, 1), 1000);
   const offset = Math.max(args.offset ?? 0, 0);
 
-  const stmt = db.prepare(`
+  const showdownUsername = getSetting(db, "showdown_username");
+  const showdownUsernameNorm = showdownUsername ? normalizeShowdownName(showdownUsername) : null;
+
+  const baseStmt = db.prepare(`
     WITH sides AS (
       SELECT
         battle_id,
@@ -66,6 +129,7 @@ export function listBattles(args: ListBattlesArgs = {}): BattleListRow[] {
       b.format_name,
       b.is_rated,
       b.winner_side,
+      b.game_type,
 
       s.user_side,
       s.user_name,
@@ -75,7 +139,6 @@ export function listBattles(args: ListBattlesArgs = {}): BattleListRow[] {
       CASE
         WHEN s.user_side = 'p1' THEN s.p2_name
         WHEN s.user_side = 'p2' THEN s.p1_name
-        -- fallback if user_side missing: prefer p2 if p1 exists, else p1
         ELSE COALESCE(s.p2_name, s.p1_name)
       END AS opponent_name,
 
@@ -92,7 +155,68 @@ export function listBattles(args: ListBattlesArgs = {}): BattleListRow[] {
     LIMIT ? OFFSET ?;
   `);
 
-  return stmt.all(limit, offset) as BattleListRow[];
+  const base = baseStmt.all(limit, offset) as Array<
+    BattleListRow & { game_type?: string | null }
+  >;
+
+  if (base.length === 0) return [];
+
+  // Fetch relevant events grouped by battle_id
+  const byBattle = new Map<string, EventRow[]>();
+
+  for (let i = 0; i < base.length; i += MAX_IDS_PER_CHUNK) {
+    const chunk = base.slice(i, i + MAX_IDS_PER_CHUNK);
+    const ids = chunk.map((r) => r.id);
+    const placeholders = ids.map(() => "?").join(",");
+
+    const evStmt = db.prepare(`
+      SELECT battle_id, event_index, line_type, raw_line
+      FROM battle_events
+      WHERE battle_id IN (${placeholders})
+        AND line_type IN ('teamsize','switch','drag','replace')
+      ORDER BY battle_id ASC, event_index ASC;
+    `);
+
+    const evRows = evStmt.all(...ids) as EventRow[];
+      for (const e of evRows) {
+        const arr = byBattle.get(e.battle_id);
+        if (arr) arr.push(e);
+        else byBattle.set(e.battle_id, [e]);
+      }
+    }
+
+    return base.map((row) => {
+      const events = byBattle.get(row.id) ?? [];
+      const d = deriveForBattle(events, row.game_type ?? null);
+
+      const userSide = row.user_side;
+      const userSeen =
+        userSide === "p1" ? d.p1_seen :
+        userSide === "p2" ? d.p2_seen :
+        [];
+
+      const user_brought_json =
+        userSide && userSeen.length > 0 ? JSON.stringify(userSeen) : null;
+
+      const user_brought_seen = userSide ? (userSeen.length || null) : null;
+
+      const user_brought_expected =
+        userSide === "p1" ? d.p1_expected :
+        userSide === "p2" ? d.p2_expected :
+        null;
+
+      // Always return a row (never fall off the end of the callback)
+      return {
+        ...row,
+        user_brought_json,
+        user_brought_seen,
+        user_brought_expected,
+
+        // optional: keep these if your UI still displays Opp counts
+        // opponent_brought_seen: null,
+        // opponent_brought_expected: null,
+      } as BattleListRow;
+    });
 }
 
 export function getBattleDetails(battleId: string): BattleDetailsDto {
@@ -128,11 +252,11 @@ export function getBattleDetails(battleId: string): BattleDetailsDto {
   >;
 
   const events = db.prepare(`
-  SELECT event_index, turn_num, line_type, raw_line
-  FROM battle_events
-  WHERE battle_id = ?
-  ORDER BY event_index ASC
-`).all(battleId) as BattleDetailsDto["events"];
+    SELECT event_index, turn_num, line_type, raw_line
+    FROM battle_events
+    WHERE battle_id = ?
+    ORDER BY event_index ASC
+  `).all(battleId) as BattleDetailsDto["events"];
 
   const revealed = revealedRaw.map((r) => ({
     side: r.side,

@@ -161,6 +161,94 @@ function TimelineRow({ label, text }: { label: string; text: string }) {
   );
 }
 
+function parsePipeLine(raw: string): string[] {
+  const parts = raw.split("|");
+  if (parts[0] === "") parts.shift();
+  return parts;
+}
+
+function speciesFromDetails(details: string): string {
+  // "Okidogi, L50, M" -> "Okidogi"
+  return (details.split(",")[0] ?? "").trim();
+}
+
+function sideFromActor(actor: string): "p1" | "p2" | null {
+  // "p1a: Okidogi" -> "p1"
+  const s = actor.slice(0, 2);
+  return s === "p1" || s === "p2" ? s : null;
+}
+
+function isDoublesFromEvents(dto: BattleDetailsDto | null | undefined): boolean {
+  const xs = (dto as any)?.events ?? [];
+  // Look at early switch/drag/replace lines for p1b/p2b
+  for (const e of xs as Array<{ line_type: string; raw_line: string }>) {
+    if (e.line_type === "turn") break; // once turns start, stop scanning “opening”
+    if (e.line_type !== "switch" && e.line_type !== "drag" && e.line_type !== "replace") continue;
+
+    const parts = parsePipeLine(e.raw_line);
+    const actor = parts[1] ?? ""; // "p1a: Name"
+    const pos = actor.slice(0, 3); // "p1a" / "p1b"
+    if (pos === "p1b" || pos === "p2b") return true;
+  }
+  return false;
+}
+
+function leadSpeciesFromEvents(
+  dto: BattleDetailsDto | null | undefined,
+  side: "p1" | "p2",
+  leadCount: number
+): string[] {
+  const xs = (dto as any)?.events ?? [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+
+  for (const e of xs as Array<{ line_type: string; raw_line: string }>) {
+    // Leads are established before or right at the opening; stop at turn 1 to avoid “first switch later”
+    if (e.line_type === "turn") break;
+    if (e.line_type !== "switch" && e.line_type !== "drag" && e.line_type !== "replace") continue;
+
+    const parts = parsePipeLine(e.raw_line);
+    const actor = parts[1] ?? "";
+    const details = parts[2] ?? "";
+    const s = sideFromActor(actor);
+    if (s !== side) continue;
+
+    const species = speciesFromDetails(details);
+    if (!species || seen.has(species)) continue;
+
+    seen.add(species);
+    out.push(species);
+    if (out.length >= leadCount) break;
+  }
+
+  return out;
+}
+
+function orderedPreviewForSide(
+  dto: BattleDetailsDto | null | undefined,
+  side: "p1" | "p2"
+): Array<{ species_name: string }> {
+  // Base order = preview slot order
+  const base = (dto?.preview ?? [])
+    .filter((p) => p.side === side)
+    .sort((a, b) => a.slot_index - b.slot_index)
+    .map((p) => ({ species_name: p.species_name }));
+
+  const doubles = isDoublesFromEvents(dto);
+  const leadCount = doubles ? 2 : 1;
+  const leads = leadSpeciesFromEvents(dto, side, leadCount);
+
+  if (!leads.length) return base;
+
+  const leadSet = new Set(leads);
+  const rest = base.filter((p) => !leadSet.has(p.species_name));
+
+  // Ensure leads are present even if preview is missing/incomplete
+  const leadObjs = leads.map((s) => ({ species_name: s }));
+
+  return [...leadObjs, ...rest];
+}
+
 export function BattleDetails({
   battle,
   details,
@@ -169,14 +257,12 @@ export function BattleDetails({
   details?: BattleDetailsDto | null;
 }) {
   const userSide = userSideFromDto(details);
-  const { p1, p2 } = groupedPreview(details);
-
   const yourSide: "p1" | "p2" | null = userSide;
   const oppSide: "p1" | "p2" | null = userSide ? (userSide === "p1" ? "p2" : "p1") : null;
-
-  const yourPreview = yourSide === "p1" ? p1 : yourSide === "p2" ? p2 : [];
-  const oppPreview = oppSide === "p1" ? p1 : oppSide === "p2" ? p2 : [];
-
+  
+  const yourPreview = yourSide ? orderedPreviewForSide(details, yourSide) : [];
+  const oppPreview = oppSide ? orderedPreviewForSide(details, oppSide) : [];
+  
   const yourName =
     yourSide ? details?.sides.find((s) => s.side === yourSide)?.player_name ?? null : null;
 
@@ -188,6 +274,8 @@ export function BattleDetails({
 
   const replayUrl = details?.battle.replay_url ?? null;
   const timelineRows = useMemo(() => toTimelineRows(details), [details]);
+  
+  const meta = details?.battle;
 
   return (
     <div className="p-6">
@@ -246,11 +334,20 @@ export function BattleDetails({
             {battle.teamVersionLabel ? ` · ${battle.teamVersionLabel}` : ""}
           </div>
 
-          {battle.matchConfidence != null ? (
-            <div className="mt-3 text-xs text-black/45">
-              Match: {battle.matchConfidence.toFixed(2)}
-              {battle.matchMethod ? ` · ${battle.matchMethod}` : ""}
-            </div>
+          {meta?.team_label ? (
+            <>
+              <div className="mt-2 text-sm text-black/55">
+                {meta.team_label}
+                {meta.team_version_label ? ` · ${meta.team_version_label}` : ""}
+              </div>
+
+              {meta.match_confidence != null ? (
+                <div className="mt-3 text-xs text-black/45">
+                  Match: {meta.match_confidence.toFixed(2)}
+                  {meta.match_method ? ` · ${meta.match_method}` : ""}
+                </div>
+              ) : null}
+            </>
           ) : (
             <div className="mt-3 text-xs text-black/45">
               Link this battle to a stored team to unlock coaching insights.
