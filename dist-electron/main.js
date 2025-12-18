@@ -1046,6 +1046,12 @@ function getBattleDetails(battleId) {
     WHERE battle_id = ?
     ORDER BY side ASC, species_name ASC
   `).all(battleId);
+  const events = db2.prepare(`
+  SELECT event_index, turn_num, line_type, raw_line
+  FROM battle_events
+  WHERE battle_id = ?
+  ORDER BY event_index ASC
+`).all(battleId);
   const revealed = revealedRaw.map((r) => ({
     side: r.side,
     species_name: r.species_name,
@@ -1055,7 +1061,7 @@ function getBattleDetails(battleId) {
     tera_type: r.tera_type,
     moves: safeJsonArray(r.moves_json)
   }));
-  return { battle, sides, preview, revealed };
+  return { battle, sides, preview, revealed, events };
 }
 function safeJsonArray(s) {
   try {
@@ -1191,9 +1197,9 @@ let win = null;
 function createWindow() {
   win = new BrowserWindow({
     width: 1380,
-    height: 880,
+    height: 910,
     minWidth: 1280,
-    minHeight: 860,
+    minHeight: 910,
     icon: path.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
     webPreferences: {
       preload: path.join(__dirname$1, "preload.mjs"),

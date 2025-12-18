@@ -119,6 +119,12 @@ export type BattleDetailsDto = {
     tera_type: string | null;
     moves: string[]; // parsed from moves_json
   }>;
+  events: Array<{
+    event_index: number;
+    turn_num: number | null;
+    line_type: string;
+    raw_line: string;
+  }>;
 };
 
 export function battleListRowToItem(row: BattleListRow): BattleListItem {

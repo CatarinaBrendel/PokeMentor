@@ -127,6 +127,13 @@ export function getBattleDetails(battleId: string): BattleDetailsDto {
     Omit<BattleDetailsDto["revealed"][number], "moves"> & { moves_json: string }
   >;
 
+  const events = db.prepare(`
+  SELECT event_index, turn_num, line_type, raw_line
+  FROM battle_events
+  WHERE battle_id = ?
+  ORDER BY event_index ASC
+`).all(battleId) as BattleDetailsDto["events"];
+
   const revealed = revealedRaw.map((r) => ({
     side: r.side,
     species_name: r.species_name,
@@ -137,7 +144,7 @@ export function getBattleDetails(battleId: string): BattleDetailsDto {
     moves: safeJsonArray(r.moves_json),
   }));
 
-  return { battle, sides, preview, revealed };
+  return { battle, sides, preview, revealed, events };
 }
 
 function safeJsonArray(s: string): string[] {

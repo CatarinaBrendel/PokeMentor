@@ -1,18 +1,9 @@
-import React from "react";
+import React, { useMemo } from "react";
 import TeamSpriteStrip from "../../pokemon/ui/TeamSpriteStrip";
 import type { BattleListItem, BattleDetailsDto } from "../model/battles.types";
 
 function cx(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
-}
-
-function TimelineRow({ label, text }: { label: string; text: string }) {
-  return (
-    <div className="flex items-start gap-3">
-      <div className="w-16 shrink-0 text-xs font-semibold text-black/45">{label}</div>
-      <div className="flex-1">{text}</div>
-    </div>
-  );
 }
 
 function userSideFromDto(dto: BattleDetailsDto | null | undefined): "p1" | "p2" | null {
@@ -37,23 +28,137 @@ function toStripMons(xs: Array<{ species_name: string }>) {
   return xs.map((x) => ({ species: x.species_name }));
 }
 
-function sideRow(dto: BattleDetailsDto | null | undefined, side: "p1" | "p2") {
-  return dto?.sides.find((s) => s.side === side) ?? null;
+function MetaBadge({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="rounded-xl bg-black/5 px-2 py-0.5 text-[11px] text-black/55">
+      {children}
+    </span>
+  );
 }
 
-function winnerLabel(dto: BattleDetailsDto | null | undefined, side: "p1" | "p2") {
-  if (!dto?.battle.winner_side) return null;
-  return dto.battle.winner_side === side ? "Winner" : null;
+function sideLabel(side: "p1" | "p2") {
+  return side.toUpperCase();
 }
 
-function fmtMeta(dto: BattleDetailsDto | null | undefined, side: "p1" | "p2") {
-  const s = sideRow(dto, side);
-  const bits: string[] = [];
-  if (s?.rating != null) bits.push(`Rating ${s.rating}`);
-  bits.push(side.toUpperCase());
-  const w = winnerLabel(dto, side);
-  if (w) bits.push(w);
-  return bits.join(" · ");
+function isWinner(dto: BattleDetailsDto | null | undefined, side: "p1" | "p2") {
+  return dto?.battle.winner_side != null && dto.battle.winner_side === side;
+}
+
+function metaBits(dto: BattleDetailsDto | null | undefined, side: "p1" | "p2") {
+  const s = dto?.sides.find((x) => x.side === side) ?? null;
+  return {
+    rating: s?.rating ?? null,
+    side,
+    winner: isWinner(dto, side),
+  };
+}
+
+function SideCardHeader({
+  title,
+  name,
+  meta,
+}: {
+  title: string;
+  name: string | null | undefined;
+  meta: { rating: number | null; side: "p1" | "p2"; winner: boolean };
+}) {
+  // Requirement: show "Opponent" if null/empty
+  const displayName = (name ?? "").trim() || title;
+
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <div className="text-sm font-semibold text-black/75">{title}</div>
+        <div className="mt-1 truncate text-sm text-black/55">{displayName}</div>
+      </div>
+
+      <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+        {meta.winner ? <MetaBadge>Winner</MetaBadge> : null}
+        <MetaBadge>{sideLabel(meta.side)}</MetaBadge>
+        {meta.rating != null ? <MetaBadge>Rating {meta.rating}</MetaBadge> : null}
+      </div>
+    </div>
+  );
+}
+
+type TimelineEvent = {
+  line_type: string;
+  raw_line: string;
+  turn_num?: number | null;
+  event_index?: number | null;
+};
+
+function pickTimelineEvents(dto: BattleDetailsDto | null | undefined): TimelineEvent[] {
+  const xs = (dto as any)?.events ?? [];
+
+  // Only main, turn-relevant events (no gametype/player/gen/etc.)
+  const keep = new Set(["turn", "switch", "drag", "move", "faint", "win"]);
+  return (xs as TimelineEvent[]).filter((e) => keep.has(e.line_type));
+}
+
+function prettyTimelineText(e: TimelineEvent): string {
+  const parts = e.raw_line.split("|").filter(Boolean);
+  const t = parts[0];
+
+  if (t === "turn") return `Turn ${parts[1] ?? "?"}`;
+
+  if (t === "switch" || t === "drag") {
+    // |switch|p1a: Name|Species, L50, M|100/100
+    const who = (parts[1] ?? "").split(":")[0]; // p1a
+    const nick = ((parts[1] ?? "").split(":")[1] ?? "").trim();
+    const species = (parts[2] ?? "").split(",")[0].trim();
+    return `${who.toUpperCase()} switched to ${nick || species} (${species})`;
+  }
+
+  if (t === "move") {
+    // |move|p1a: Foo|Protect|p1a: Foo
+    const actor = ((parts[1] ?? "").split(":")[1] ?? parts[1] ?? "").trim();
+    const move = (parts[2] ?? "").trim();
+    const target = ((parts[3] ?? "").split(":")[1] ?? "").trim();
+    return target ? `${actor} used ${move} → ${target}` : `${actor} used ${move}`;
+  }
+
+  if (t === "faint") {
+    const who = ((parts[1] ?? "").split(":")[1] ?? parts[1] ?? "").trim();
+    return `${who} fainted`;
+  }
+
+  if (t === "win") return `Winner: ${parts[1] ?? "Unknown"}`;
+
+  return e.raw_line;
+}
+
+function toTimelineRows(dto: BattleDetailsDto | null | undefined) {
+  const xs = pickTimelineEvents(dto);
+
+  const sorted = [...xs].sort((a, b) => {
+    const ta = a.turn_num ?? 0;
+    const tb = b.turn_num ?? 0;
+    if (ta !== tb) return ta - tb;
+    return (a.event_index ?? 0) - (b.event_index ?? 0);
+  });
+
+  let lastTurn: number | null = null;
+
+  return sorted
+    .filter((e) => e.line_type !== "turn") // don’t show raw |turn| line; we label turns in the left column
+    .map((e) => {
+      const turn = e.turn_num ?? null;
+      const label = turn != null && turn !== lastTurn ? `Turn ${turn}` : "";
+      if (turn != null) lastTurn = turn;
+      return { label, text: prettyTimelineText(e) };
+    });
+}
+
+function TimelineRow({ label, text }: { label: string; text: string }) {
+  return (
+    <div className="flex items-start gap-3">
+      <div className="w-16 shrink-0 text-xs font-semibold text-black/45">
+        {label || ""}
+      </div>
+      <div className="flex-1">{text}</div>
+    </div>
+  );
 }
 
 export function BattleDetails({
@@ -72,10 +177,17 @@ export function BattleDetails({
   const yourPreview = yourSide === "p1" ? p1 : yourSide === "p2" ? p2 : [];
   const oppPreview = oppSide === "p1" ? p1 : oppSide === "p2" ? p2 : [];
 
-  const yourMeta = yourSide ? fmtMeta(details, yourSide) : "";
-  const oppMeta = oppSide ? fmtMeta(details, oppSide) : "";
+  const yourName =
+    yourSide ? details?.sides.find((s) => s.side === yourSide)?.player_name ?? null : null;
+
+  const oppName =
+    oppSide ? details?.sides.find((s) => s.side === oppSide)?.player_name ?? null : null;
+
+  const yourMeta = yourSide ? metaBits(details, yourSide) : { rating: null, side: "p1" as const, winner: false };
+  const oppMeta = oppSide ? metaBits(details, oppSide) : { rating: null, side: "p2" as const, winner: false };
 
   const replayUrl = details?.battle.replay_url ?? null;
+  const timelineRows = useMemo(() => toTimelineRows(details), [details]);
 
   return (
     <div className="p-6">
@@ -116,17 +228,10 @@ export function BattleDetails({
         </div>
       </div>
 
-      {/* Team vs Opponent (same layout as before) */}
+      {/* Team vs Opponent */}
       <div className="mt-6 grid grid-cols-2 gap-4">
         <div className="rounded-3xl bg-white/70 p-4 ring-1 ring-black/10">
-          <div className="text-sm font-semibold text-black/75">Your Team</div>
-          <div className="mt-1 text-sm text-black/55">
-            {battle.teamLabel ?? "Unlinked team"}
-            {battle.teamVersionLabel ? ` · ${battle.teamVersionLabel}` : ""}
-          </div>
-
-          {/* small, non-clutter metadata */}
-          {yourMeta ? <div className="mt-2 text-xs text-black/45">{yourMeta}</div> : null}
+          <SideCardHeader title="Your Team" name={yourName} meta={yourMeta} />
 
           <div className="mt-3">
             {yourPreview.length ? (
@@ -134,6 +239,11 @@ export function BattleDetails({
             ) : (
               <div className="mt-3 text-xs text-black/45">No team preview available.</div>
             )}
+          </div>
+
+          <div className="mt-2 text-sm text-black/55">
+            {battle.teamLabel ?? "Unlinked team"}
+            {battle.teamVersionLabel ? ` · ${battle.teamVersionLabel}` : ""}
           </div>
 
           {battle.matchConfidence != null ? (
@@ -149,10 +259,7 @@ export function BattleDetails({
         </div>
 
         <div className="rounded-3xl bg-white/70 p-4 ring-1 ring-black/10">
-          <div className="text-sm font-semibold text-black/75">Opponent</div>
-          <div className="mt-1 text-sm text-black/55">{battle.opponentName}</div>
-
-          {oppMeta ? <div className="mt-2 text-xs text-black/45">{oppMeta}</div> : null}
+          <SideCardHeader title="Opponent" name={oppName} meta={oppMeta} />
 
           <div className="mt-3">
             {oppPreview.length ? (
@@ -164,17 +271,22 @@ export function BattleDetails({
         </div>
       </div>
 
-      {/* Timeline (keep as-is for now) */}
-      <div className="mt-6 rounded-3xl bg-white/70 p-4 ring-1 ring-black/10">
-        <div className="text-sm font-semibold text-black/75">Timeline</div>
-        <div className="mt-3 space-y-2 text-sm text-black/60">
-          <TimelineRow label="Turn 1" text="Revealed leads (mock event)" />
-          <TimelineRow label="Turn 3" text="First KO (mock event)" />
-          <TimelineRow label="Turn 7" text="Victory condition reached (mock event)" />
+      {/* Timeline (fixed height + inner scroll) */}
+      <div className="mt-6 rounded-3xl bg-white/70 p-4 ring-1 ring-black/10 flex flex-col">
+        <div className="text-sm font-semibold text-black/75 shrink-0">Timeline</div>
+
+        <div className="mt-3 space-y-2 text-sm text-black/60 overflow-auto max-h-[120px] pr-2">
+          {timelineRows.length ? (
+            timelineRows.slice(0, 120).map((row, idx) => (
+              <TimelineRow key={`${idx}-${row.label}`} label={row.label} text={row.text} />
+            ))
+          ) : (
+            <div className="text-xs text-black/45">No timeline events available.</div>
+          )}
         </div>
       </div>
 
-      {/* AI Review (unchanged) */}
+      {/* AI Review */}
       <div className="mt-6 rounded-3xl bg-white/70 p-4 ring-1 ring-black/10">
         <div className="text-sm font-semibold text-black/75">AI Review (coming soon)</div>
         <div className="mt-2 text-sm text-black/55">

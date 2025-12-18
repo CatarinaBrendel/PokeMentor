@@ -22,9 +22,9 @@ let win: BrowserWindow | null = null
 function createWindow() {
   win = new BrowserWindow({
     width: 1380,
-    height: 880,
+    height: 910,
     minWidth: 1280,
-    minHeight: 860,
+    minHeight: 910,
     icon: path.join(process.env.VITE_PUBLIC, 'electron-vite.svg'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
