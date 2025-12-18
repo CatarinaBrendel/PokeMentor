@@ -343,7 +343,10 @@ export function teamsQueries(db: BetterSqlite3.Database) {
     },
 
     getActiveTeamSummary(): TeamListRow | null {
-      const row = getActiveTeamSummaryStmt.get() as TeamListRow | undefined;
+      const active = getActiveTeamIdStmt.get() as { id: string } | undefined;
+      if (!active?.id) return null;
+
+      const row = getActiveTeamSummaryStmt.get({ team_id: active.id }) as TeamListRow | undefined;
       return row ?? null;
     },
 

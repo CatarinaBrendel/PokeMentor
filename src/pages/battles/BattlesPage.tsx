@@ -9,12 +9,17 @@ import {
 import type { BattleListRow, BattleListItem } from "../../features/battles/model/battles.types";
 import type { ImportReplaysResult, BattleDetailsDto } from "../../features/battles/model/battles.types";
 import { BattlesApi } from "../../features/battles/api/batles.api";
+import { TeamsApi } from "../../features/teams/api/teams.api";
+import type { TeamListRow } from "../../features/teams/model/teams.types";
+
 
 type ActiveTeamSummary = {
   name: string;
   formatLabel?: string;
   versionLabel?: string;
 };
+
+type TeamFilterValue = "all" | "active" | { teamId: string };
 
 type Props = { initialSelectedId?: string };
 
@@ -46,7 +51,7 @@ function toUiRow(r: BattleListRow): BattleListItem {
     id: r.id,
     playedAtUnix: r.played_at,
     playedAt: formatPlayedAt(r.played_at),
-
+    team_id: r.team_id ?? null,
     result,
     opponentName: r.opponent_name ?? "Unknown",
     format_ps,
@@ -70,7 +75,7 @@ export function BattlesPage({ initialSelectedId }: Props) {
 
   const [selectedId, setSelectedId] = useState<string>(initialSelectedId ?? "");
   const [query, setQuery] = useState("");
-  const [resultFilter, setResultFilter] = useState<"all" | "win" | "loss" | "unknown">("all");
+  const [resultFilter, setResultFilter] = useState<"all" | "win" | "loss">("all");
   const [ratedOnly, setRatedOnly] = useState(false);
   const [formatFilter, setFormatFilter] = useState<string>("all");
   
@@ -79,11 +84,10 @@ export function BattlesPage({ initialSelectedId }: Props) {
   const [details, setDetails] = useState<BattleDetailsDto | null>(null);
   const [detailsLoading, setDetailsLoading] = useState(false);
 
-  const activeTeam: ActiveTeamSummary = {
-    name: "Active team (placeholder)",
-    formatLabel: "—",
-    versionLabel: "",
-  };
+  const [teams, setTeams] = useState<TeamListRow[]>([]);
+  const [activeTeam, setActiveTeam] = useState<TeamListRow | null>(null);
+  const [teamFilter, setTeamFilter] = useState<TeamFilterValue>("active");
+
 
   async function refreshList() {
     try {
@@ -93,10 +97,6 @@ export function BattlesPage({ initialSelectedId }: Props) {
       // IMPORTANT: this should return BattleListRow[] (your SQL query output)
       const dbRows = (await BattlesApi.list({ limit: 200, offset: 0 })) as BattleListRow[];
       const uiRows = dbRows.map(toUiRow);
-      console.log("[BattlesPage] sample row", dbRows[0]?.id, {
-        user_brought_seen: dbRows[0]?.user_brought_seen,
-        user_brought_json: dbRows[0]?.user_brought_json,
-      });
 
       setRows(uiRows);
       setSelectedId((prev) => prev || uiRows[0]?.id || "");
@@ -107,15 +107,32 @@ export function BattlesPage({ initialSelectedId }: Props) {
     }
   }
 
+  function resolvedTeamId(
+    teamFilter: TeamFilterValue,
+    activeTeam: TeamListRow | null
+  ): string | null {
+    if (teamFilter === "all") return null;
+    if (teamFilter === "active") return activeTeam?.id ?? null;
+    return teamFilter.teamId;
+  }
+
   useEffect(() => {
     refreshList();
   }, []);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
+
+    const teamId = resolvedTeamId(teamFilter, activeTeam);
+
     return rows.filter((b) => {
+      // ✅ team filter
+      if (teamId && b.team_id !== teamId) return false;
+
+      // existing filters
       if (resultFilter !== "all" && b.result !== resultFilter) return false;
       if (ratedOnly && !b.rated) return false;
+
       if (formatFilter !== "all") {
         const a = (b.format_ps ?? "").trim().toLowerCase();
         const f = formatFilter.trim().toLowerCase();
@@ -123,20 +140,14 @@ export function BattlesPage({ initialSelectedId }: Props) {
       }
 
       if (!q) return true;
-      const hay = [
-        b.opponentName,
-        b.format_ps ?? "",
-      ]
-        .join(" ")
-        .toLowerCase();
-
+      const hay = [b.opponentName, b.format_ps ?? ""].join(" ").toLowerCase();
       return hay.includes(q);
     });
-  }, [rows, query, resultFilter, ratedOnly, formatFilter]);
+  }, [rows, query, resultFilter, ratedOnly, formatFilter, teamFilter, activeTeam]);
 
   const selected = useMemo(
-    () => rows.find((b) => b.id === selectedId) ?? rows[0] ?? null,
-    [rows, selectedId]
+    () => filtered.find((b) => b.id === selectedId) ?? filtered[0] ?? null,
+    [filtered, selectedId]
   );
 
   useEffect(() => {
@@ -186,6 +197,18 @@ export function BattlesPage({ initialSelectedId }: Props) {
     };
   }, [selectedId]);
 
+  useEffect(() => {
+    (async () => {
+      const ts = await TeamsApi.listTeams();
+      setTeams(ts);
+
+      const activity = await TeamsApi.getActiveTeamActivity();
+      setActiveTeam(activity.activeTeam ?? null);
+
+      if (!activity.activeTeam) setTeamFilter("all");
+    })();
+  }, []);
+
   const stats = useMemo(() => {
     const total = rows.length;
     const wins = rows.filter((r) => r.result === "win").length;
@@ -215,7 +238,10 @@ export function BattlesPage({ initialSelectedId }: Props) {
         <BattlesHeaderBar stats={stats} query={query} onQueryChange={setQuery} />
 
         <BattlesFilterBar
+          teams={teams}
           activeTeam={activeTeam}
+          teamFilter={teamFilter}
+          onTeamFilterChange={setTeamFilter}
           resultFilter={resultFilter}
           onResultFilterChange={setResultFilter}
           ratedOnly={ratedOnly}

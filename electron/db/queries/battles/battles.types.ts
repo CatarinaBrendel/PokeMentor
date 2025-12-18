@@ -57,6 +57,7 @@ export type BattleListRow = {
 
   // stored as unix seconds (INTEGER) in your schema, may be null
   played_at: number | null;
+  team_id: string | null;
 
   format_id: string | null;
   format_name: string | null;

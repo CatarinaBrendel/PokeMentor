@@ -341,7 +341,9 @@ function teamsQueries(db2) {
       })();
     },
     getActiveTeamSummary() {
-      const row = getActiveTeamSummaryStmt.get();
+      const active = getActiveTeamIdStmt.get();
+      if (!(active == null ? void 0 : active.id)) return null;
+      const row = getActiveTeamSummaryStmt.get({ team_id: active.id });
       return row ?? null;
     },
     getActiveTeamActivity() {
@@ -1172,6 +1174,14 @@ function listBattles(args = {}) {
         MAX(CASE WHEN side = 'p2' THEN player_name END) AS p2_name
       FROM battle_sides
       GROUP BY battle_id
+    ),
+    links AS (
+      SELECT
+        btl.battle_id,
+        MAX(tv.team_id) AS team_id
+      FROM battle_team_links btl
+      JOIN team_versions tv ON tv.id = btl.team_version_id
+      GROUP BY btl.battle_id
     )
     SELECT
       b.id,
@@ -1186,6 +1196,8 @@ function listBattles(args = {}) {
       s.user_name,
       s.p1_name,
       s.p2_name,
+
+      l.team_id AS team_id, 
 
       CASE
         WHEN s.user_side = 'p1' THEN s.p2_name
@@ -1202,6 +1214,7 @@ function listBattles(args = {}) {
 
     FROM battles b
     LEFT JOIN sides s ON s.battle_id = b.id
+    LEFT JOIN links l ON l.battle_id = b.id
     ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
     LIMIT ? OFFSET ?;
   `);

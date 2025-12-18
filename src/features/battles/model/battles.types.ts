@@ -56,6 +56,7 @@ export type BattleDbRow = {
 export type BattleListRow = {
   id: string;
   played_at: number | null;
+  team_id: string | null;
 
   format_id: string | null;
   format_name: string | null;
@@ -80,6 +81,7 @@ export type BattleListItem = {
   id: string;
   playedAtUnix: number | null;
   playedAt: string;
+  team_id: string | null;
 
   result: "win" | "loss" | "unknown";
   opponentName: string;
