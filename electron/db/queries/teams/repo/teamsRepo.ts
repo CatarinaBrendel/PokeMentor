@@ -1,3 +1,12 @@
+// teams/repo/teamsRepo.ts
+//
+// DB-only repository for Teams domain.
+// - No network
+// - No parsing
+// - No cross-domain orchestration
+//
+// This file is the single place that knows SQL for teams / versions / sets / slots.
+
 import type BetterSqlite3 from "better-sqlite3";
 import type {
   TeamListRow,
@@ -9,11 +18,12 @@ import type {
   TeamVersionRow,
   TeamSlotWithSetRow,
   ActiveTeamActivity,
-} from "./teams.types";
+} from "../teams.types";
+
+export type TeamsRepo = ReturnType<typeof teamsRepo>;
 
 type RowId = { id: string };
-
-type MoveRowId = { id: number }
+type MoveRowId = { id: number };
 
 type SetMoveRow = {
   pokemon_set_id: string;
@@ -21,11 +31,10 @@ type SetMoveRow = {
   name: string;
 };
 
-/**
- * Queries for Teams domain.
- * This file MUST NOT fetch Pokepaste or parse text.
- */
-export function teamsQueries(db: BetterSqlite3.Database) {
+export function teamsRepo(db: BetterSqlite3.Database) {
+  // ---------------------------------------------------------------------------
+  // Inserts
+  // ---------------------------------------------------------------------------
   const insertTeamStmt = db.prepare(`
     INSERT INTO teams (id, name, format_ps, created_at, updated_at)
     VALUES (@id, @name, @format_ps, @now, @now)
@@ -78,8 +87,11 @@ export function teamsQueries(db: BetterSqlite3.Database) {
     VALUES (@team_version_id, @slot_index, @pokemon_set_id)
   `);
 
+  // ---------------------------------------------------------------------------
+  // Lists / Reads
+  // ---------------------------------------------------------------------------
   const listTeamsStmt = db.prepare(`
-   SELECT
+    SELECT
       t.id,
       t.name,
       t.format_ps,
@@ -91,7 +103,7 @@ export function teamsQueries(db: BetterSqlite3.Database) {
         WHERE tv.team_id = t.id
       ) AS latest_version_num
     FROM teams t
-    ORDER BY t.is_active DESC, t.updated_at DESC;
+    ORDER BY t.is_active DESC, t.updated_at DESC
   `);
 
   const deleteTeamStmt = db.prepare(`
@@ -152,6 +164,9 @@ export function teamsQueries(db: BetterSqlite3.Database) {
     ORDER BY ts.slot_index ASC
   `);
 
+  // ---------------------------------------------------------------------------
+  // Moves (normalized table)
+  // ---------------------------------------------------------------------------
   const selectMoveByNameStmt = db.prepare(`
     SELECT id
     FROM moves
@@ -169,6 +184,29 @@ export function teamsQueries(db: BetterSqlite3.Database) {
     VALUES (@pokemon_set_id, @move_slot, @move_id)
   `);
 
+  function getMovesForSetIds(setIds: string[]): SetMoveRow[] {
+    if (setIds.length === 0) return [];
+
+    const ids = Array.from(new Set(setIds));
+    const placeholders = ids.map(() => "?").join(", ");
+
+    const stmt = db.prepare(`
+      SELECT
+        psm.pokemon_set_id,
+        psm.move_slot,
+        m.name
+      FROM pokemon_set_moves psm
+      JOIN moves m ON m.id = psm.move_id
+      WHERE psm.pokemon_set_id IN (${placeholders})
+      ORDER BY psm.pokemon_set_id ASC, psm.move_slot ASC
+    `);
+
+    return stmt.all(...ids) as SetMoveRow[];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Active team + activity
+  // ---------------------------------------------------------------------------
   const clearActiveTeamsStmt = db.prepare(`
     UPDATE teams SET is_active = 0
   `);
@@ -218,27 +256,82 @@ export function teamsQueries(db: BetterSqlite3.Database) {
     WHERE tv.team_id = @team_id
   `);
 
-  function getMovesForSetIds(setIds: string[]): SetMoveRow[] {
-    if (setIds.length === 0) return [];
+  const unlinkTeamStmt = db.prepare(`
+    UPDATE battle_team_links
+    SET team_version_id = NULL,
+        match_confidence = NULL,
+        match_method = NULL,
+        matched_at = NULL,
+        matched_by = NULL
+    WHERE team_version_id IN (
+      SELECT id FROM team_versions WHERE team_id = ?
+    )
+  `);
 
-    const ids = Array.from(new Set(setIds));
-    const placeholders = ids.map(() => "?").join(", ");
+  // ---------------------------------------------------------------------------
+  // List team version
+  // ---------------------------------------------------------------------------
+  const listLatestTeamVersionsByFormatStmt = db.prepare(`
+    SELECT
+      t.id          AS team_id,
+      t.name        AS team_name,
+      t.format_ps   AS format_ps,
+      tv.id         AS team_version_id,
+      tv.version_num AS version_num,
+      tv.created_at AS created_at
+    FROM teams t
+    JOIN team_versions tv
+      ON tv.team_id = t.id
+    JOIN (
+      SELECT team_id, MAX(version_num) AS max_version_num
+      FROM team_versions
+      GROUP BY team_id
+    ) latest
+      ON latest.team_id = tv.team_id
+     AND latest.max_version_num = tv.version_num
+    WHERE COALESCE(t.format_ps, '') = ?
+    ORDER BY tv.created_at DESC
+    LIMIT ?
+  `);
 
-    const stmt = db.prepare(`
-      SELECT
-        psm.pokemon_set_id,
-        psm.move_slot,
-        m.name
-      FROM pokemon_set_moves psm
-      JOIN moves m ON m.id = psm.move_id
-      WHERE psm.pokemon_set_id IN (${placeholders})
-      ORDER BY psm.pokemon_set_id ASC, psm.move_slot ASC
-    `);
+  const listLatestTeamVersionsAnyFormatStmt = db.prepare(`
+    SELECT
+      t.id          AS team_id,
+      t.name        AS team_name,
+      t.format_ps   AS format_ps,
+      tv.id         AS team_version_id,
+      tv.version_num AS version_num,
+      tv.created_at AS created_at
+    FROM teams t
+    JOIN team_versions tv
+      ON tv.team_id = t.id
+    JOIN (
+      SELECT team_id, MAX(version_num) AS max_version_num
+      FROM team_versions
+      GROUP BY team_id
+    ) latest
+      ON latest.team_id = tv.team_id
+     AND latest.max_version_num = tv.version_num
+    ORDER BY tv.created_at DESC
+    LIMIT ?
+  `);
 
-    return stmt.all(...ids) as SetMoveRow[];
-  }
+  const listTeamVersionSlotSpeciesStmt = db.prepare(`
+    SELECT
+      ts.slot_index AS slot_index,
+      ps.species_name AS species_name
+    FROM team_slots ts
+    JOIN pokemon_sets ps ON ps.id = ts.pokemon_set_id
+    WHERE ts.team_version_id = ?
+    ORDER BY ts.slot_index ASC
+  `);
 
+
+  // ---------------------------------------------------------------------------
+  // Public API
+  // ---------------------------------------------------------------------------
   return {
+    // Inserts / writes
     insertTeam(args: CreateTeamArgs) {
       insertTeamStmt.run(args);
     },
@@ -260,55 +353,69 @@ export function teamsQueries(db: BetterSqlite3.Database) {
       insertSlotStmt.run(args);
     },
 
+    deleteTeam(teamId: string) {
+      unlinkTeamStmt.run(teamId);
+      deleteTeamStmt.run(teamId);
+    },
+
+    // List team versions
+        listLatestTeamVersions(args: {
+      formatKeyHint?: string | null;
+      limit: number;
+    }) {
+      const limit = args.limit;
+      const formatKey = args.formatKeyHint?.trim() || null;
+
+      if (formatKey) {
+        return listLatestTeamVersionsByFormatStmt.all(formatKey, limit) as import("../teams.types").TeamVersionCandidateRow[];
+      }
+
+      return listLatestTeamVersionsAnyFormatStmt.all(limit) as import("../teams.types").TeamVersionCandidateRow[];
+    },
+
+    listTeamVersionSlotsSpecies(teamVersionId: string) {
+      return listTeamVersionSlotSpeciesStmt.all(teamVersionId) as import("../teams.types").TeamVersionSlotSpeciesRow[];
+    },
+
+    // Reads
     listTeams(): TeamListRow[] {
       return listTeamsStmt.all() as TeamListRow[];
     },
 
-    deleteTeam(teamId: string) {
-      deleteTeamStmt.run(teamId);
-    },
-
     getTeamDetails(teamId: string): TeamDetails {
       const team = getTeamStmt.get(teamId) as TeamHeaderRow | undefined;
-      if (!team) {
-        throw new Error("Team not found");
-      }
+      if (!team) throw new Error("Team not found");
 
       const latestVersion =
         (getLatestVersionStmt.get(teamId) as TeamVersionRow | undefined) ?? null;
 
-            const slotsBase = latestVersion
+      const slotsBase = latestVersion
         ? (getSlotsForVersionStmt.all(latestVersion.id) as Omit<TeamSlotWithSetRow, "moves">[])
         : [];
 
-      let slots: TeamSlotWithSetRow[] = [];
-
-      if (slotsBase.length === 0) {
-        slots = [];
-      } else {
-        const ids = Array.from(new Set(slotsBase.map(s => s.pokemon_set_id)));
-        const rows = getMovesForSetIds((ids));
-
-        const movesBySetId = new Map<string, string[]>();
-        for (const r of rows) {
-          const arr = movesBySetId.get(r.pokemon_set_id) ?? [];
-          arr.push(r.name);
-          movesBySetId.set(r.pokemon_set_id, arr);
-        }
-
-        slots = slotsBase.map((s) => ({
-          ...s,
-          moves: movesBySetId.get(s.pokemon_set_id) ?? [],
-        }));
+      if (!latestVersion || slotsBase.length === 0) {
+        return { team, latestVersion, slots: [] } satisfies TeamDetails;
       }
 
-      return {
-        team,
-        latestVersion,
-        slots,
-      } satisfies TeamDetails;
+      const setIds = Array.from(new Set(slotsBase.map((s) => s.pokemon_set_id)));
+      const moveRows = getMovesForSetIds(setIds);
+
+      const movesBySetId = new Map<string, string[]>();
+      for (const r of moveRows) {
+        const arr = movesBySetId.get(r.pokemon_set_id) ?? [];
+        arr.push(r.name);
+        movesBySetId.set(r.pokemon_set_id, arr);
+      }
+
+      const slots: TeamSlotWithSetRow[] = slotsBase.map((s) => ({
+        ...s,
+        moves: movesBySetId.get(s.pokemon_set_id) ?? [],
+      }));
+
+      return { team, latestVersion, slots } satisfies TeamDetails;
     },
 
+    // Moves
     getOrCreateMoveId(name: string): number {
       const trimmed = name.trim();
       if (!trimmed) throw new Error("Move name is empty.");
@@ -316,11 +423,10 @@ export function teamsQueries(db: BetterSqlite3.Database) {
       const found = selectMoveByNameStmt.get({ name: trimmed }) as MoveRowId | undefined;
       if (found?.id) return found.id;
 
-      // Insert (may race on UNIQUE in concurrent runs; safe to catch & re-select)
       try {
         insertMoveStmt.run({ name: trimmed });
-      } catch (e) {
-        // If UNIQUE constraint hit, just fall through to re-select.
+      } catch {
+        // likely UNIQUE constraint; re-select below
       }
 
       const row = selectMoveByNameStmt.get({ name: trimmed }) as MoveRowId | undefined;
@@ -332,6 +438,7 @@ export function teamsQueries(db: BetterSqlite3.Database) {
       insertSetMoveStmt.run(args);
     },
 
+    // Active team
     setActiveTeam(team_id: string) {
       db.transaction(() => {
         clearActiveTeamsStmt.run();
@@ -368,7 +475,7 @@ export function teamsQueries(db: BetterSqlite3.Database) {
         | undefined;
 
       const battleRow = getBattleActivityStmt.get({ team_id: active.id }) as
-        | { total_battles: number | null; last_battle_at: string | null }
+        | { total_battles: number | null; last_battle_at: number | null }
         | undefined;
 
       return {
@@ -378,6 +485,5 @@ export function teamsQueries(db: BetterSqlite3.Database) {
         total_battles: battleRow?.total_battles ?? 0,
       };
     },
-
   };
 }

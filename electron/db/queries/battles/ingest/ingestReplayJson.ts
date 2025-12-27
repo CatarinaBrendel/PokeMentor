@@ -1,7 +1,9 @@
+// battles/ingest/ingestReplayJson.ts
 import crypto from "node:crypto";
 import type BetterSqlite3 from "better-sqlite3";
 import type { ShowdownReplayJson } from "./fetchReplayJson";
 import { deriveBroughtFromEvents } from "./deriveBroughtFromEvents";
+import { parseShowteamBlob } from "./parseShowteam";
 
 type Side = "p1" | "p2";
 
@@ -95,7 +97,11 @@ function findWinner(lines: string[]): { winnerName: string | null; winnerSide: S
   return { winnerName, winnerSide };
 }
 
-function parsePreviewMon(rawText: string): { species: string; level: number | null; gender: "M" | "F" | null } {
+function parsePreviewMon(rawText: string): {
+  species: string;
+  level: number | null;
+  gender: "M" | "F" | null;
+} {
   // Example: "Okidogi, L50, M"
   const bits = rawText.split(",").map((s) => s.trim()).filter(Boolean);
   const species = (bits[0] ?? "").trim();
@@ -106,43 +112,6 @@ function parsePreviewMon(rawText: string): { species: string; level: number | nu
   const gender: "M" | "F" | null = bits.includes("M") ? "M" : bits.includes("F") ? "F" : null;
 
   return { species, level, gender };
-}
-
-function parseShowteamEntries(blob: string): string[] {
-  // packed list separated by "]"
-  return blob.split("]").map((x) => x.trim()).filter(Boolean);
-}
-
-function parseShowteamEntry(entry: string): {
-  species: string;
-  nickname: string | null;
-  item: string | null;
-  ability: string | null;
-  moves: string[];
-  gender: "M" | "F" | null;
-  level: number | null;
-  tera: string | null;
-} {
-  const fields = entry.split("|");
-
-  const species = (fields[0] ?? "").trim();
-  const nickname = fields[1] ? fields[1] : null;
-
-  const item = fields[3] ? fields[3] : null;
-  const ability = fields[4] ? fields[4] : null;
-
-  const movesCsv = fields[5] ?? "";
-  const moves = movesCsv.split(",").map((m) => m.trim()).filter(Boolean);
-
-  const genderRaw = fields[8];
-  const gender: "M" | "F" | null = genderRaw === "M" || genderRaw === "F" ? genderRaw : null;
-
-  const level = fields[11] ? toFiniteNumber(fields[11]) : null;
-
-  const tail = fields[12] ?? "";
-  const tera = tail.includes(",") ? tail.split(",").pop()?.trim() ?? null : null;
-
-  return { species, nickname, item, ability, moves, gender, level, tera };
 }
 
 function makeIsUserFn(db: BetterSqlite3.Database): (playerName: string) => 0 | 1 {
@@ -181,15 +150,27 @@ function prepareStatements(db: BetterSqlite3.Database) {
     `),
 
     insertPreview: db.prepare(`
-      INSERT INTO battle_preview_pokemon (battle_id, side, slot_index, species_name, level, gender, shiny, raw_text)
-      VALUES (@battle_id, @side, @slot_index, @species_name, @level, @gender, @shiny, @raw_text);
+      INSERT INTO battle_preview_pokemon (
+        battle_id, side, slot_index,
+        species_name, level, gender, shiny, raw_text
+      )
+      VALUES (
+        @battle_id, @side, @slot_index,
+        @species_name, @level, @gender, @shiny, @raw_text
+      );
     `),
 
     insertRevealed: db.prepare(`
       INSERT INTO battle_revealed_sets (
-        battle_id, side, species_name, nickname, item_name, ability_name, tera_type, level, gender, shiny, moves_json, raw_fragment
+        battle_id, side, species_name,
+        nickname, item_name, ability_name, tera_type,
+        level, gender, shiny,
+        moves_json, raw_fragment
       ) VALUES (
-        @battle_id, @side, @species_name, @nickname, @item_name, @ability_name, @tera_type, @level, @gender, @shiny, @moves_json, @raw_fragment
+        @battle_id, @side, @species_name,
+        @nickname, @item_name, @ability_name, @tera_type,
+        @level, @gender, @shiny,
+        @moves_json, @raw_fragment
       );
     `),
 
@@ -231,14 +212,12 @@ export function ingestReplayJson(
   const isUser = makeIsUserFn(db);
   const stmts = prepareStatements(db);
 
-  // counters / state while iterating the protocol stream
   let eventIndex = 0;
   let currentTurn: number | null = null;
   let currentT: number | null = null;
   const previewSlotCounter: Record<Side, number> = { p1: 0, p2: 0 };
 
   db.transaction(() => {
-    // 1) battles row
     stmts.insertBattle.run({
       id: battleId,
       replay_id: json.id,
@@ -265,16 +244,13 @@ export function ingestReplayJson(
       created_at: now,
     });
 
-    // 2) walk the log and persist derived tables
     for (const raw of lines) {
       const parts = parsePipeLine(raw);
       const type = parts[0] ?? "unknown";
 
-      // temporal context
       if (type === "t:") currentT = toFiniteNumber(parts[1]);
       if (type === "turn") currentTurn = toFiniteNumber(parts[1]);
 
-      // structured inserts
       if (type === "player") {
         const side = parts[1] as Side;
         const name = parts[2] ?? "";
@@ -300,7 +276,6 @@ export function ingestReplayJson(
         if (side === "p1" || side === "p2") {
           previewSlotCounter[side] += 1;
           const slotIndex = previewSlotCounter[side];
-
           const { species, level, gender } = parsePreviewMon(rawText);
 
           if (species) {
@@ -320,32 +295,31 @@ export function ingestReplayJson(
 
       if (type === "showteam") {
         const side = parts[1] as Side;
-        const blob = parts[2] ?? "";
+        const blob = parts.slice(2).join("|");
 
         if (side === "p1" || side === "p2") {
-          for (const entry of parseShowteamEntries(blob)) {
-            const parsed = parseShowteamEntry(entry);
-            if (!parsed.species) continue;
+            const entries = parseShowteamBlob(blob);
 
+            for (const parsed of entries) {
             stmts.insertRevealed.run({
-              battle_id: battleId,
-              side,
-              species_name: parsed.species,
-              nickname: parsed.nickname,
-              item_name: parsed.item,
-              ability_name: parsed.ability,
-              tera_type: parsed.tera,
-              level: parsed.level,
-              gender: parsed.gender,
-              shiny: 0,
-              moves_json: JSON.stringify(parsed.moves),
-              raw_fragment: entry,
+                battle_id: battleId,
+                side,
+                species_name: parsed.species,
+                nickname: parsed.nickname,
+                item_name: parsed.item,
+                ability_name: parsed.ability,
+                tera_type: parsed.tera,
+                level: parsed.level,
+                gender: parsed.gender,
+                shiny: 0,
+                moves_json: JSON.stringify(parsed.moves),
+                raw_fragment: parsed.raw,
             });
-          }
+            }
         }
-      }
+        }
 
-      // Always store raw line as an event (minimal structure for now)
+      // Store every raw line as an event (minimal normalized fields for now)
       stmts.insertEvent.run({
         battle_id: battleId,
         event_index: eventIndex++,
@@ -374,7 +348,9 @@ export function ingestReplayJson(
     }
   })();
 
+  // Derivation step stays in ingest layer.
   deriveBroughtFromEvents(db, battleId);
 
+  // IMPORTANT: Linking is done by BattleIngestService or BattleLinkService.
   return { battleId };
 }

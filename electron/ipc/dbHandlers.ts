@@ -1,73 +1,104 @@
 // electron/ipc/dbHandlers.ts
 import { ipcMain } from "electron";
-import { importTeamFromPokepaste } from "../db/queries/teams/importPokepaste";
-import { listTeams, setTeamActive, getActiveTeamActivity } from "../db/queries/teams/listTeams";
-import { deleteTeam } from "../db/queries/teams/deleteTeam";
-import { getTeamDetails,  getActiveTeamSummary } from "../db/queries/teams/getTeamDetails";
-import { importBattlesFromReplaysText } from "../db/queries/battles/importBattlesFromReplaysText"
-import { listBattles, getBattleDetails } from "../db/queries/battles/battles";
+import { getDb } from "../db/index";
+
+// -----------------------------
+// Teams (new structure)
+// -----------------------------
+import { teamsRepo } from "../db/queries/teams/repo/teamsRepo";
+import { teamImportService } from "../db/queries/teams/services/TeamImportService";
+import { TeamActiveService } from "../db/queries/teams/services/TeamActiveService";
+
+// -----------------------------
+// Battles (new structure)
+// -----------------------------
+import { battleRepo } from "../db/queries/battles/repo/battleRepo";
+import { battleIngestService } from "../db/queries/battles/services/BattleIngestService";
+import { BattleLinkService } from "../db/queries/battles/services/BattleLinkService";
+
+// -----------------------------
+// Settings (unchanged)
+// -----------------------------
 import { getSettings, updateSettings } from "../db/queries/settings/settings";
 
-ipcMain.removeHandler("db:teams:importPokepaste");
-ipcMain.removeHandler("db:teams:list");
-ipcMain.removeHandler("db:battles:importReplays");
-ipcMain.removeHandler("db:settings:get");
-ipcMain.removeHandler("db:settings:update");
-
+/**
+ * Centralized registration of DB-backed IPC handlers.
+ *
+ * Keep this file “composition-only”:
+ * - create repos/services
+ * - wire them to ipcMain.handle(...)
+ * - do not embed SQL here
+ */
 export function registerDbHandlers() {
-  ipcMain.handle("db:teams:importPokepaste", async (_evt, args) => {
-    const result = await importTeamFromPokepaste(args);
+  // Build “composition root” objects once.
+  // (Better-sqlite3 is synchronous; these are cheap wrappers.)
+  const db = getDb();
 
-    return {
-      team_id: result.team_id,
-      version_id: result.version_id,
-      version_num: result.version_num,
-      slots_inserted: result.slots_inserted,
-    };
+  const teams = teamsRepo(db);
+  const battles = battleRepo(db);
+
+  const battleLink = BattleLinkService(db, {
+    battleRepo: battles,
+    teamsRepo: teams,
   });
 
-    ipcMain.handle("db:teams:list", async () => {
-      return listTeams();
-    });
+  const battleIngest = battleIngestService(db, {
+    battleRepo: battles,
+    battleLinkService: battleLink,
+  });
 
-    ipcMain.handle("db:teams:delete", async (_evt, teamId: string) => {
-      return deleteTeam(teamId);
-    });
+  const teamActive = new TeamActiveService(teams);
 
-    ipcMain.handle("db:teams:getDetails", async (_evt, teamId: string) => {
-      return getTeamDetails(teamId);
-    });
+  const teamImport = teamImportService(db, {
+    teamsRepo: teams,
+    // This service triggers relinking of existing battles after import
+    // via post-commit linker in teams/linking (which uses battles matchers).
+    // If your TeamImportService already does it internally, nothing else needed here.
+  });
 
-    ipcMain.handle("db:teams:setTeamActive", (_evt, teamId: string) => {
-      return setTeamActive(teamId);
-    });
+  // Teams
+  ipcMain.handle("db:teams:list", async () => teams.listTeams());
+  ipcMain.handle("db:teams:getDetails", async (_evt, teamId: string) => teams.getTeamDetails(teamId));
+  ipcMain.handle("db:teams:getActiveSummary", async () => teams.getActiveTeamSummary());
+  ipcMain.handle("db:teams:getActiveActivity", async () => teams.getActiveTeamActivity());
+  ipcMain.handle("db:teams:setTeamActive", async (_evt, teamId: string) => teamActive.setActiveTeam(teamId));
+  ipcMain.handle("db:teams:delete", async (_evt, teamId: string) => teams.deleteTeam(teamId));
+  ipcMain.handle("db:teams:importPokepaste", async (_evt, args) => teamImport.importFromPokepaste(args));
 
-    ipcMain.handle("db:teams:getActiveSummary", () => {
-      return getActiveTeamSummary();
-    });
+  // Battles
+  ipcMain.handle("db:battles:list", async (_evt, args) => {
+    const limit = args?.limit ?? 200;
+    const offset = args?.offset ?? 0;
 
-    ipcMain.handle("db:teams:getActiveActivity", () => {
-      return getActiveTeamActivity();
-    });
+    return battles.listBattles({ limit, offset });
+  });
+  ipcMain.handle("db:battles:getDetails", async (_evt, battleId: string) => {
+    const d = battles.getBattleDetails(battleId);
+    if (!d) return null;
 
-    ipcMain.handle("db:battles:importReplays", async (_evt, args: { text: string }) => {
-      return importBattlesFromReplaysText(args);
-    });
+    return {
+      battle: {
+        ...d.battle,
+        // optional fields you might add later:
+        team_label: null,
+        team_version_label: null,
+        match_confidence: d.userLink?.match_confidence ?? null,
+        match_method: d.userLink?.match_method ?? null,
+      },
+      sides: d.sides,
+      preview: d.preview,
+      revealed: d.revealed,
+      events: d.events,
+    };
+  });
+  ipcMain.handle("db:battles:importReplays", async (_evt, args: { text: string }) => {
+    return battleIngest.importFromReplaysText(args.text);
+  });
+  ipcMain.handle("db:battles:relinkBattle", async (_evt, battleId: string) => {
+    return battleLink.autoLinkBattleForUserSide({ battleId, formatKeyHint: null });
+  });
 
-    ipcMain.handle("battles:list", (_e, args) => {
-      return listBattles(args);
-    });
-
-    ipcMain.handle("db:settings:get", async () => {
-      return getSettings();
-    });
-
-    ipcMain.handle("db:settings:update", async (_evt, args: { showdown_username?: string | null }) => {
-      return updateSettings(args);
-    });
-
-    ipcMain.handle("db:battles:getDetails", async (_evt, battleId: string) => {
-      return getBattleDetails(battleId);
-    });
-
+  // Settings
+  ipcMain.handle("db:settings:get", async () => getSettings());
+  ipcMain.handle("db:settings:update", async (_evt, patch: Record<string, string>) => updateSettings(patch));
 }

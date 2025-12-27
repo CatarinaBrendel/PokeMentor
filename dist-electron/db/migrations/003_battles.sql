@@ -246,9 +246,9 @@ CREATE TABLE IF NOT EXISTS battle_team_links (
   battle_id TEXT NOT NULL REFERENCES battles(id) ON DELETE CASCADE,
   side TEXT NOT NULL CHECK (side IN ('p1','p2')),
 
-  team_version_id TEXT,                          -- REFERENCES team_versions(id) in your team DB
+  team_version_id TEXT REFERENCES team_versions(id) ON DELETE SET NULL,
   match_confidence REAL,
-  match_method TEXT,                             -- 'exact-hash','species-only','manual'
+  match_method TEXT,
   matched_at INTEGER,
   matched_by TEXT CHECK (matched_by IN ('auto','user')),
 

@@ -9,9 +9,10 @@ export type TeamSummary = {
 };
 
 export type ImportTeamArgs = {
-  url: string;
+  url?: string;
   name?: string;
   format_ps?: string;
+  paste_text?: string;
 };
 
 export type ImportTeamResult = {

@@ -53,28 +53,54 @@ export type BattleDbRow = {
   p2_name: string | null;
 };
 
+export type Side = "p1" | "p2";
+export type BattleResult = "win" | "loss" | null;
+
 export type BattleListRow = {
   id: string;
-  played_at: number | null;
-  team_id: string | null;
 
+  replay_id: string;
   format_id: string | null;
   format_name: string | null;
+  game_type: string | null;
+
+  played_at: number | null;
+  upload_time: number | null;
+  created_at: number;
+
   is_rated: 0 | 1;
-  winner_side: "p1" | "p2" | null;
+  is_private: 0 | 1;
 
-  user_side: "p1" | "p2" | null;
+  winner_side: Side | null;
+  winner_name: string | null;
+
+  // LEFT JOIN battle_sides us ... is_user=1
+  user_side: Side | null;
+  user_player_name: string | null;
+
+  // LEFT JOIN battle_sides os ... other side
   opponent_name: string | null;
-  result: "win" | "loss" | null;
 
-  brought_json: string | null;
+  // Derived from winner_side + user_side
+  result: BattleResult;
 
-  user_brought_json: string | null;
-  user_brought_seen: number | null;
-  user_brought_expected: number | null;
-  
-  opponent_brought_seen: number | null;
-  opponent_brought_expected: number | null;
+  // LEFT JOIN battle_team_links l ...
+  linked_team_version_id: string | null;
+  link_confidence: number | null;
+  link_method: string | null;
+  link_matched_by: "auto" | "user" | null;
+
+  // LEFT JOIN team_versions / teams
+  team_id: string | null;
+  team_name: string | null;
+
+  // Optional derived JSON fields if you add them later
+  user_brought_json?: string | null;
+  opponent_brought_json?: string | null;
+  user_brought_seen?: number | null;
+  user_brought_expected?: number | null;
+  opponent_brought_seen?: number | null;
+  opponent_brought_expected?: number | null;
 };
 
 export type BattleListItem = {

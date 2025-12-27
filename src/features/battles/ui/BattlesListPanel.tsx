@@ -70,10 +70,6 @@ export default function BattlesListPanel({
               const active = selectedId === b.id;
               const expanded = expandedId === b.id;
 
-              const hasUserCounts = b.broughtUserSeen != null || b.broughtUserExpected != null;
-              const hasOppCounts = b.broughtOpponentSeen != null || b.broughtOpponentExpected != null;
-              const hasCounts = hasUserCounts || hasOppCounts;
-
               const canExpand = (b.brought?.length ?? 0) > 0;
 
               const title =

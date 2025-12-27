@@ -18,7 +18,7 @@ export type CreateTeamVersionArgs = {
   id: string; // version_id
   team_id: string;
   version_num: number;
-  source_url: string;
+  source_url: string | null;
   source_hash: string;
   source_text: string;
   source_title: string | null;
@@ -106,7 +106,20 @@ export type TeamDetails = {
 export type ActiveTeamActivity = {
   activeTeam: TeamListRow | null;
   last_import_at: string | null;
-  last_battle_at: string | null;
+  last_battle_at: number | null;
   total_battles: number;
 };
 
+export type TeamVersionCandidateRow = {
+  team_id: string;
+  team_name: string | null;
+  format_ps: string | null;
+  team_version_id: string;
+  version_num: number;
+  created_at: string;
+};
+
+export type TeamVersionSlotSpeciesRow = {
+  slot_index: number;
+  species_name: string;
+};

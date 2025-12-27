@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS pokemon_sets (
   iv_hp INTEGER, iv_atk INTEGER, iv_def INTEGER, iv_spa INTEGER, iv_spd INTEGER, iv_spe INTEGER,
 
   -- Helpful to dedupe identical sets across versions/teams if you want:
-  set_hash TEXT,                       -- hash(canonical set)
+  set_hash TEXT NOT NULL,                       -- hash(canonical set)
   created_at TEXT NOT NULL
 );
 

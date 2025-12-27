@@ -3,23 +3,143 @@ import { fileURLToPath } from "node:url";
 import path, { dirname } from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 import crypto, { randomUUID } from "node:crypto";
 const require$1 = createRequire(import.meta.url);
 const Database = require$1("better-sqlite3");
 let db = null;
+function ensureDir(p) {
+  fs.mkdirSync(p, { recursive: true });
+}
+function exists(p) {
+  try {
+    return fs.existsSync(p);
+  } catch {
+    return false;
+  }
+}
+function quarantineDbFiles(dbPath, reason) {
+  const ts = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+  const base = `${dbPath}.bad-${ts}`;
+  const files = [
+    { from: dbPath, to: base },
+    { from: `${dbPath}-wal`, to: `${base}-wal` },
+    { from: `${dbPath}-shm`, to: `${base}-shm` }
+  ];
+  console.warn(`[db] quarantining db files (reason=${reason})`);
+  for (const f of files) {
+    try {
+      if (exists(f.from)) fs.renameSync(f.from, f.to);
+    } catch (err) {
+      console.warn(`[db] quarantine rename failed: ${f.from} -> ${f.to}`, err);
+    }
+  }
+  return base;
+}
+function runQuickCheck(d) {
+  const row = d.prepare("PRAGMA quick_check;").get();
+  return String((row == null ? void 0 : row.quick_check) ?? "");
+}
+function runIntegrityCheck(d) {
+  const row = d.prepare("PRAGMA integrity_check;").get();
+  return String((row == null ? void 0 : row.integrity_check) ?? "");
+}
+function tryCheckpoint(d) {
+  try {
+    d.pragma("wal_checkpoint(TRUNCATE)");
+  } catch (err) {
+    console.warn("[db] wal_checkpoint failed", err);
+  }
+}
+function hasSqlite3Cli() {
+  const r = spawnSync("sqlite3", ["-version"], { encoding: "utf8" });
+  return r.status === 0;
+}
+function rebuildViaDump(badDbPath, rebuiltDbPath) {
+  const cmd = `sqlite3 "${badDbPath}" ".dump" | sqlite3 "${rebuiltDbPath}"`;
+  const r = spawnSync(cmd, { shell: true, encoding: "utf8" });
+  if (r.status !== 0) {
+    return { ok: false, error: r.stderr || r.stdout || "dump/import failed" };
+  }
+  return { ok: true };
+}
+function openDbRaw(dbPath) {
+  return new Database(dbPath);
+}
+function setRuntimePragmas(d) {
+  d.pragma("foreign_keys = ON");
+  d.pragma("busy_timeout = 5000");
+  d.pragma("journal_mode = WAL");
+  d.pragma("synchronous = NORMAL");
+}
+function validateDbOrThrow(d) {
+  const qc = runQuickCheck(d);
+  if (qc === "ok") return;
+  const ic = runIntegrityCheck(d);
+  throw new Error(`sqlite integrity failed: quick_check=${qc}; integrity_check=${ic}`);
+}
 function getDb() {
   if (db) return db;
   const userData = app.getPath("userData");
   const dir = path.join(userData, "data");
-  fs.mkdirSync(dir, { recursive: true });
+  ensureDir(dir);
   const dbPath = path.join(dir, "pokementor.sqlite");
-  db = new Database(dbPath);
-  db.pragma("foreign_keys = ON");
-  db.pragma("busy_timeout = 5000");
-  db.pragma("journal_mode = WAL");
-  db.pragma("synchronous = NORMAL");
   console.log("[db] userData =", userData);
   console.log("[db] dbPath   =", dbPath);
+  if (exists(dbPath)) {
+    try {
+      const d = openDbRaw(dbPath);
+      tryCheckpoint(d);
+      validateDbOrThrow(d);
+      setRuntimePragmas(d);
+      db = d;
+      return db;
+    } catch (err) {
+      console.error("[db] open/validate failed; will attempt recovery", err);
+      const quarantinedBase = quarantineDbFiles(dbPath, "open/validate failed");
+      if (hasSqlite3Cli() && exists(quarantinedBase)) {
+        const rebuiltPath = dbPath;
+        const tmpRebuilt = `${rebuiltPath}.rebuilt-${Date.now()}`;
+        const r = rebuildViaDump(quarantinedBase, tmpRebuilt);
+        if (r.ok) {
+          try {
+            const d2 = openDbRaw(tmpRebuilt);
+            validateDbOrThrow(d2);
+            setRuntimePragmas(d2);
+            d2.close();
+            try {
+              if (exists(rebuiltPath)) fs.unlinkSync(rebuiltPath);
+            } catch {
+            }
+            fs.renameSync(tmpRebuilt, rebuiltPath);
+            const d3 = openDbRaw(rebuiltPath);
+            setRuntimePragmas(d3);
+            db = d3;
+            console.warn("[db] recovery succeeded via sqlite3 .dump rebuild");
+            return db;
+          } catch (e2) {
+            console.error("[db] rebuild validated failed; will fallback to new db", e2);
+            try {
+              if (exists(tmpRebuilt)) fs.unlinkSync(tmpRebuilt);
+            } catch {
+            }
+          }
+        } else {
+          console.error("[db] rebuild via dump failed", r.error);
+          try {
+            if (exists(tmpRebuilt)) fs.unlinkSync(tmpRebuilt);
+          } catch {
+          }
+        }
+      } else {
+        console.warn("[db] sqlite3 CLI not available; skipping dump rebuild");
+      }
+    }
+  }
+  console.warn("[db] creating new database");
+  const dNew = openDbRaw(dbPath);
+  setRuntimePragmas(dNew);
+  db = dNew;
   return db;
 }
 function findMigrationsDir() {
@@ -72,7 +192,7 @@ async function runMigrations() {
   }
   console.log("[migrate] done. newly applied:", appliedNow);
 }
-function teamsQueries(db2) {
+function teamsRepo(db2) {
   const insertTeamStmt = db2.prepare(`
     INSERT INTO teams (id, name, format_ps, created_at, updated_at)
     VALUES (@id, @name, @format_ps, @now, @now)
@@ -121,7 +241,7 @@ function teamsQueries(db2) {
     VALUES (@team_version_id, @slot_index, @pokemon_set_id)
   `);
   const listTeamsStmt = db2.prepare(`
-   SELECT
+    SELECT
       t.id,
       t.name,
       t.format_ps,
@@ -133,7 +253,7 @@ function teamsQueries(db2) {
         WHERE tv.team_id = t.id
       ) AS latest_version_num
     FROM teams t
-    ORDER BY t.is_active DESC, t.updated_at DESC;
+    ORDER BY t.is_active DESC, t.updated_at DESC
   `);
   const deleteTeamStmt = db2.prepare(`
     DELETE FROM teams
@@ -203,6 +323,22 @@ function teamsQueries(db2) {
     INSERT INTO pokemon_set_moves (pokemon_set_id, move_slot, move_id)
     VALUES (@pokemon_set_id, @move_slot, @move_id)
   `);
+  function getMovesForSetIds(setIds) {
+    if (setIds.length === 0) return [];
+    const ids = Array.from(new Set(setIds));
+    const placeholders = ids.map(() => "?").join(", ");
+    const stmt = db2.prepare(`
+      SELECT
+        psm.pokemon_set_id,
+        psm.move_slot,
+        m.name
+      FROM pokemon_set_moves psm
+      JOIN moves m ON m.id = psm.move_id
+      WHERE psm.pokemon_set_id IN (${placeholders})
+      ORDER BY psm.pokemon_set_id ASC, psm.move_slot ASC
+    `);
+    return stmt.all(...ids);
+  }
   const clearActiveTeamsStmt = db2.prepare(`
     UPDATE teams SET is_active = 0
   `);
@@ -246,23 +382,71 @@ function teamsQueries(db2) {
     JOIN battles b ON b.id = btl.battle_id
     WHERE tv.team_id = @team_id
   `);
-  function getMovesForSetIds(setIds) {
-    if (setIds.length === 0) return [];
-    const ids = Array.from(new Set(setIds));
-    const placeholders = ids.map(() => "?").join(", ");
-    const stmt = db2.prepare(`
-      SELECT
-        psm.pokemon_set_id,
-        psm.move_slot,
-        m.name
-      FROM pokemon_set_moves psm
-      JOIN moves m ON m.id = psm.move_id
-      WHERE psm.pokemon_set_id IN (${placeholders})
-      ORDER BY psm.pokemon_set_id ASC, psm.move_slot ASC
-    `);
-    return stmt.all(...ids);
-  }
+  const unlinkTeamStmt = db2.prepare(`
+    UPDATE battle_team_links
+    SET team_version_id = NULL,
+        match_confidence = NULL,
+        match_method = NULL,
+        matched_at = NULL,
+        matched_by = NULL
+    WHERE team_version_id IN (
+      SELECT id FROM team_versions WHERE team_id = ?
+    )
+  `);
+  const listLatestTeamVersionsByFormatStmt = db2.prepare(`
+    SELECT
+      t.id          AS team_id,
+      t.name        AS team_name,
+      t.format_ps   AS format_ps,
+      tv.id         AS team_version_id,
+      tv.version_num AS version_num,
+      tv.created_at AS created_at
+    FROM teams t
+    JOIN team_versions tv
+      ON tv.team_id = t.id
+    JOIN (
+      SELECT team_id, MAX(version_num) AS max_version_num
+      FROM team_versions
+      GROUP BY team_id
+    ) latest
+      ON latest.team_id = tv.team_id
+     AND latest.max_version_num = tv.version_num
+    WHERE COALESCE(t.format_ps, '') = ?
+    ORDER BY tv.created_at DESC
+    LIMIT ?
+  `);
+  const listLatestTeamVersionsAnyFormatStmt = db2.prepare(`
+    SELECT
+      t.id          AS team_id,
+      t.name        AS team_name,
+      t.format_ps   AS format_ps,
+      tv.id         AS team_version_id,
+      tv.version_num AS version_num,
+      tv.created_at AS created_at
+    FROM teams t
+    JOIN team_versions tv
+      ON tv.team_id = t.id
+    JOIN (
+      SELECT team_id, MAX(version_num) AS max_version_num
+      FROM team_versions
+      GROUP BY team_id
+    ) latest
+      ON latest.team_id = tv.team_id
+     AND latest.max_version_num = tv.version_num
+    ORDER BY tv.created_at DESC
+    LIMIT ?
+  `);
+  const listTeamVersionSlotSpeciesStmt = db2.prepare(`
+    SELECT
+      ts.slot_index AS slot_index,
+      ps.species_name AS species_name
+    FROM team_slots ts
+    JOIN pokemon_sets ps ON ps.id = ts.pokemon_set_id
+    WHERE ts.team_version_id = ?
+    ORDER BY ts.slot_index ASC
+  `);
   return {
+    // Inserts / writes
     insertTeam(args) {
       insertTeamStmt.run(args);
     },
@@ -279,42 +463,50 @@ function teamsQueries(db2) {
     insertTeamSlot(args) {
       insertSlotStmt.run(args);
     },
+    deleteTeam(teamId) {
+      unlinkTeamStmt.run(teamId);
+      deleteTeamStmt.run(teamId);
+    },
+    // List team versions
+    listLatestTeamVersions(args) {
+      var _a;
+      const limit = args.limit;
+      const formatKey = ((_a = args.formatKeyHint) == null ? void 0 : _a.trim()) || null;
+      if (formatKey) {
+        return listLatestTeamVersionsByFormatStmt.all(formatKey, limit);
+      }
+      return listLatestTeamVersionsAnyFormatStmt.all(limit);
+    },
+    listTeamVersionSlotsSpecies(teamVersionId) {
+      return listTeamVersionSlotSpeciesStmt.all(teamVersionId);
+    },
+    // Reads
     listTeams() {
       return listTeamsStmt.all();
     },
-    deleteTeam(teamId) {
-      deleteTeamStmt.run(teamId);
-    },
     getTeamDetails(teamId) {
       const team = getTeamStmt.get(teamId);
-      if (!team) {
-        throw new Error("Team not found");
-      }
+      if (!team) throw new Error("Team not found");
       const latestVersion = getLatestVersionStmt.get(teamId) ?? null;
       const slotsBase = latestVersion ? getSlotsForVersionStmt.all(latestVersion.id) : [];
-      let slots = [];
-      if (slotsBase.length === 0) {
-        slots = [];
-      } else {
-        const ids = Array.from(new Set(slotsBase.map((s) => s.pokemon_set_id)));
-        const rows = getMovesForSetIds(ids);
-        const movesBySetId = /* @__PURE__ */ new Map();
-        for (const r of rows) {
-          const arr = movesBySetId.get(r.pokemon_set_id) ?? [];
-          arr.push(r.name);
-          movesBySetId.set(r.pokemon_set_id, arr);
-        }
-        slots = slotsBase.map((s) => ({
-          ...s,
-          moves: movesBySetId.get(s.pokemon_set_id) ?? []
-        }));
+      if (!latestVersion || slotsBase.length === 0) {
+        return { team, latestVersion, slots: [] };
       }
-      return {
-        team,
-        latestVersion,
-        slots
-      };
+      const setIds = Array.from(new Set(slotsBase.map((s) => s.pokemon_set_id)));
+      const moveRows = getMovesForSetIds(setIds);
+      const movesBySetId = /* @__PURE__ */ new Map();
+      for (const r of moveRows) {
+        const arr = movesBySetId.get(r.pokemon_set_id) ?? [];
+        arr.push(r.name);
+        movesBySetId.set(r.pokemon_set_id, arr);
+      }
+      const slots = slotsBase.map((s) => ({
+        ...s,
+        moves: movesBySetId.get(s.pokemon_set_id) ?? []
+      }));
+      return { team, latestVersion, slots };
     },
+    // Moves
     getOrCreateMoveId(name) {
       const trimmed = name.trim();
       if (!trimmed) throw new Error("Move name is empty.");
@@ -322,7 +514,7 @@ function teamsQueries(db2) {
       if (found == null ? void 0 : found.id) return found.id;
       try {
         insertMoveStmt.run({ name: trimmed });
-      } catch (e) {
+      } catch {
       }
       const row = selectMoveByNameStmt.get({ name: trimmed });
       if (!(row == null ? void 0 : row.id)) throw new Error(`Failed to create move: ${trimmed}`);
@@ -331,6 +523,7 @@ function teamsQueries(db2) {
     insertPokemonSetMove(args) {
       insertSetMoveStmt.run(args);
     },
+    // Active team
     setActiveTeam(team_id) {
       db2.transaction(() => {
         clearActiveTeamsStmt.run();
@@ -368,6 +561,493 @@ function teamsQueries(db2) {
     }
   };
 }
+function uniqClean(xs) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const raw of xs) {
+    const s = (raw ?? "").trim();
+    if (!s) continue;
+    const k = s.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(s);
+  }
+  return out;
+}
+function getUserSide$1(db2, battleId) {
+  const row = db2.prepare(
+    `
+      SELECT side
+      FROM battle_sides
+      WHERE battle_id = ? AND is_user = 1
+      LIMIT 1
+    `
+  ).get(battleId);
+  return (row == null ? void 0 : row.side) ?? null;
+}
+function getPreviewSpecies(db2, battleId, side) {
+  const rows = db2.prepare(
+    `
+      SELECT species_name
+      FROM battle_preview_pokemon
+      WHERE battle_id = ? AND side = ?
+      ORDER BY slot_index ASC
+    `
+  ).all(battleId, side);
+  return uniqClean(rows.map((r) => r.species_name));
+}
+function getRevealedSpecies(db2, battleId, side) {
+  const rows = db2.prepare(
+    `
+      SELECT DISTINCT species_name
+      FROM battle_revealed_sets
+      WHERE battle_id = ? AND side = ?
+      ORDER BY species_name ASC
+    `
+  ).all(battleId, side);
+  return uniqClean(rows.map((r) => r.species_name));
+}
+function getBroughtSpecies(db2, battleId, side) {
+  const rows = db2.prepare(
+    `
+      SELECT i.species_name
+      FROM battle_brought_pokemon b
+      JOIN battle_pokemon_instances i
+        ON i.id = b.pokemon_instance_id
+      WHERE b.battle_id = ? AND b.side = ?
+      ORDER BY b.is_lead DESC, i.species_name ASC
+    `
+  ).all(battleId, side);
+  return uniqClean(rows.map((r) => r.species_name));
+}
+function selectBattleSpeciesForUser(db2, battleId, opts) {
+  const userSide = getUserSide$1(db2, battleId);
+  if (!userSide) return { species: [], source: "none" };
+  const brought = getBroughtSpecies(db2, battleId, userSide);
+  if (brought.length > 0) {
+    return { species: brought, source: "brought" };
+  }
+  const minRevealedToTrust = (opts == null ? void 0 : opts.minRevealedToTrust) ?? 4;
+  const revealed = getRevealedSpecies(db2, battleId, userSide);
+  if (revealed.length >= minRevealedToTrust) {
+    return { species: revealed, source: "revealed" };
+  }
+  const preview = getPreviewSpecies(db2, battleId, userSide);
+  if (preview.length > 0) {
+    return { species: preview, source: "preview" };
+  }
+  return { species: [], source: "none" };
+}
+function normalizeSpecies(name) {
+  return name.trim().toLowerCase();
+}
+function overlapCount(a, b) {
+  const bs = new Set(b.map(normalizeSpecies));
+  let n = 0;
+  for (const x of a) if (bs.has(normalizeSpecies(x))) n += 1;
+  return n;
+}
+function tryLinkBattleToTeamVersion(db2, deps, args) {
+  const teamRows = deps.teamsRepo.listTeamVersionSlotsSpecies(args.teamVersionId);
+  const teamSpecies = teamRows.map((r) => r.species_name).filter(Boolean);
+  const teamSize = teamSpecies.length;
+  const battle = selectBattleSpeciesForUser(db2, args.battleId, { minRevealedToTrust: 4 });
+  const battleSpecies = battle.species;
+  if (teamSize === 0 || battleSpecies.length === 0) {
+    return {
+      linked: false,
+      confidence: 0,
+      method: teamSize === 0 ? "team_empty" : "battle_species_empty",
+      battleSource: battle.source,
+      teamSize,
+      overlap: 0
+    };
+  }
+  const overlap = overlapCount(battleSpecies, teamSpecies);
+  const baseConfidence = overlap / teamSize;
+  const defaults = battle.source === "preview" ? { minOverlap: 5, minConfidence: 0.83 } : { minOverlap: 4, minConfidence: 0.66 };
+  const minOverlap = args.minOverlap ?? defaults.minOverlap;
+  const minConfidence = args.minConfidence ?? defaults.minConfidence;
+  const method = battle.source === "brought" ? "team-link_brought_overlap" : battle.source === "revealed" ? "team-link_revealed_overlap" : battle.source === "preview" ? "team-link_preview_overlap" : "team-link_no_data";
+  const linked = overlap >= minOverlap && baseConfidence >= minConfidence;
+  return {
+    linked,
+    confidence: baseConfidence,
+    method,
+    battleSource: battle.source,
+    teamSize,
+    overlap
+  };
+}
+function getUserSide(db2, battleId) {
+  const row = db2.prepare(
+    `SELECT side
+       FROM battle_sides
+       WHERE battle_id = ? AND is_user = 1
+       LIMIT 1`
+  ).get(battleId);
+  return (row == null ? void 0 : row.side) ?? null;
+}
+function backfillLinksForTeamVersion(db2, deps, args) {
+  var _a;
+  const limit = args.limit ?? 500;
+  const selectBattleIdsByFormat = db2.prepare(`
+    SELECT b.id
+    FROM battles b
+    WHERE COALESCE(b.format_id, b.format_name, '') = ?
+      AND NOT EXISTS (
+        SELECT 1
+        FROM battle_team_links l
+        JOIN battle_sides s
+          ON s.battle_id = l.battle_id
+        AND s.side = l.side
+        WHERE l.battle_id = b.id
+          AND s.is_user = 1
+          AND l.team_version_id IS NOT NULL
+      )
+    ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
+    LIMIT ?
+  `);
+  const selectBattleIdsAnyFormat = db2.prepare(`
+    SELECT b.id
+    FROM battles b
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM battle_team_links l
+      JOIN battle_sides s
+        ON s.battle_id = l.battle_id
+      AND s.side = l.side
+      WHERE l.battle_id = b.id
+        AND s.is_user = 1
+        AND l.team_version_id IS NOT NULL
+    )
+    ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
+    LIMIT ?
+  `);
+  const formatKey = ((_a = args.formatKeyHint) == null ? void 0 : _a.trim()) || null;
+  let battleIds = [];
+  if (formatKey) {
+    battleIds = selectBattleIdsByFormat.all(formatKey, limit);
+  }
+  if (!battleIds.length) {
+    battleIds = selectBattleIdsAnyFormat.all(limit);
+  }
+  const previewCountsStmt = db2.prepare(
+    `SELECT side, COUNT(*) AS c
+     FROM battle_preview_pokemon
+     WHERE battle_id = ?
+     GROUP BY side`
+  );
+  const revealedCountsStmt = db2.prepare(
+    `SELECT side, COUNT(*) AS c
+     FROM battle_revealed_sets
+     WHERE battle_id = ?
+     GROUP BY side`
+  );
+  let linked = 0;
+  let scanned = 0;
+  for (const b of battleIds) {
+    scanned += 1;
+    const userSide = getUserSide(db2, b.id);
+    const previewCounts = previewCountsStmt.all(b.id);
+    const revealedCounts = revealedCountsStmt.all(b.id);
+    const r = tryLinkBattleToTeamVersion(db2, deps, {
+      battleId: b.id,
+      teamVersionId: args.teamVersionId
+    });
+    if (args.debug) {
+      console.log("[backfill] battle", b.id, {
+        userSide,
+        previewCounts,
+        revealedCounts,
+        linked: r.linked,
+        confidence: r.confidence,
+        method: r.method
+      });
+    }
+    if (r.linked) linked += 1;
+  }
+  return { scanned, linked };
+}
+function postCommitTeamVersionLinking(db2, deps, args) {
+  const res = backfillLinksForTeamVersion(db2, deps, {
+    teamVersionId: args.teamVersionId,
+    formatKeyHint: args.formatKeyHint ?? null,
+    limit: args.limit ?? 500
+  });
+  {
+    console.log("[team linking] post-commit", {
+      teamVersionId: args.teamVersionId,
+      formatKeyHint: args.formatKeyHint ?? null,
+      ...res
+    });
+  }
+  return res;
+}
+const STAT_MAP = {
+  HP: "hp",
+  Atk: "atk",
+  Def: "def",
+  SpA: "spa",
+  "Sp. Atk": "spa",
+  SpAtk: "spa",
+  SpD: "spd",
+  "Sp. Def": "spd",
+  SpDef: "spd",
+  Spe: "spe"
+};
+function toFiniteInt$1(v) {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+function parseSpread(value) {
+  const out = {};
+  const parts = value.split("/").map((x) => x.trim()).filter(Boolean);
+  for (const p of parts) {
+    const m = p.match(/^(\d+)\s+(.+)$/);
+    if (!m) continue;
+    const n = toFiniteInt$1(m[1]);
+    if (n == null) continue;
+    const statRaw = m[2].trim().replace(/\s+/g, " ");
+    const key = STAT_MAP[statRaw] ?? STAT_MAP[statRaw.replace(/\./g, "")];
+    if (!key) continue;
+    out[key] = n;
+  }
+  return out;
+}
+function parseHeader(line) {
+  const [leftRaw, itemPart] = line.split(" @ ");
+  const item_name = itemPart ? itemPart.trim() : null;
+  let left = (leftRaw ?? "").trim();
+  if (!left) return null;
+  let gender = null;
+  const gm = left.match(/\((M|F)\)\s*$/);
+  if (gm) {
+    gender = gm[1];
+    left = left.replace(/\((M|F)\)\s*$/, "").trim();
+  }
+  let nickname = null;
+  let species_name = left;
+  const nm = left.match(/^(.+)\s+\((.+)\)$/);
+  if (nm) {
+    nickname = nm[1].trim();
+    species_name = nm[2].trim();
+  }
+  if (!species_name) return null;
+  return { nickname, species_name, item_name, gender };
+}
+function statsFromSpread(sp) {
+  return {
+    hp: sp.hp ?? null,
+    atk: sp.atk ?? null,
+    def: sp.def ?? null,
+    spa: sp.spa ?? null,
+    spd: sp.spd ?? null,
+    spe: sp.spe ?? null
+  };
+}
+function looksLikeEnglishKeyLine(line) {
+  return /^(Ability|Level|EVs|IVs|Tera Type|Happiness|Shiny)\s*:/i.test(line);
+}
+function parseShowdownExport(raw) {
+  const warnings = [];
+  const text = (raw ?? "").replace(/\r\n/g, "\n").trim();
+  if (!text) return { sets: [], warnings: ["Empty paste."] };
+  const blocks = text.split(/\n{2,}/).map((b) => b.trim()).filter(Boolean);
+  const sets = [];
+  for (const [bi, block] of blocks.entries()) {
+    const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) continue;
+    const header = parseHeader(lines[0]);
+    if (!header) {
+      warnings.push(`Block ${bi + 1}: invalid header line.`);
+      continue;
+    }
+    let ability_name = null;
+    let level = null;
+    let shiny = 0;
+    let tera_type = null;
+    let happiness = null;
+    let nature = null;
+    let evs = {};
+    let ivs = {};
+    const moves = [];
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      const nat = line.match(/^(.+)\s+Nature$/i);
+      if (nat) {
+        nature = nat[1].trim() || null;
+        continue;
+      }
+      const kv = line.match(/^([^:]+):\s*(.+)$/);
+      if (kv) {
+        const key = kv[1].trim().toLowerCase();
+        const val = kv[2].trim();
+        if (!looksLikeEnglishKeyLine(line)) {
+          warnings.push(`Block ${bi + 1}: unsupported key "${kv[1].trim()}" (English-only).`);
+          continue;
+        }
+        if (key === "ability") {
+          ability_name = val || null;
+          continue;
+        }
+        if (key === "level") {
+          level = toFiniteInt$1(val);
+          continue;
+        }
+        if (key === "evs") {
+          evs = parseSpread(val);
+          continue;
+        }
+        if (key === "ivs") {
+          ivs = parseSpread(val);
+          continue;
+        }
+        if (key === "tera type") {
+          tera_type = val || null;
+          continue;
+        }
+        if (key === "happiness") {
+          happiness = toFiniteInt$1(val);
+          continue;
+        }
+        if (key === "shiny") {
+          shiny = /yes|true|1/i.test(val) ? 1 : 0;
+          continue;
+        }
+        continue;
+      }
+      if (moves.length < 4) {
+        const mv = line.replace(/^-+\s*/, "").trim();
+        if (mv && !mv.includes(":")) {
+          moves.push(mv);
+          continue;
+        }
+      }
+    }
+    if (moves.length === 0) {
+      warnings.push(`Block ${bi + 1}: no moves detected.`);
+    }
+    if (moves.length > 4) {
+      warnings.push(`Block ${bi + 1}: ${moves.length} moves found; keeping first 4.`);
+    }
+    const ev = statsFromSpread(evs);
+    const iv = statsFromSpread(ivs);
+    sets.push({
+      nickname: header.nickname,
+      species_name: header.species_name,
+      item_name: header.item_name,
+      ability_name,
+      level,
+      gender: header.gender,
+      shiny,
+      tera_type,
+      happiness,
+      nature,
+      ev_hp: ev.hp,
+      ev_atk: ev.atk,
+      ev_def: ev.def,
+      ev_spa: ev.spa,
+      ev_spd: ev.spd,
+      ev_spe: ev.spe,
+      iv_hp: iv.hp,
+      iv_atk: iv.atk,
+      iv_def: iv.def,
+      iv_spa: iv.spa,
+      iv_spd: iv.spd,
+      iv_spe: iv.spe,
+      moves: moves.slice(0, 4)
+    });
+  }
+  if (sets.length === 0) warnings.push("No Pokémon blocks found in paste.");
+  if (sets.length > 6) warnings.push(`Paste contains ${sets.length} Pokémon; only first 6 will be imported.`);
+  return { sets, warnings };
+}
+function canonicalizeSourceText(raw) {
+  return raw.replace(/\r\n/g, "\n").trim().replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n");
+}
+function sha256(s) {
+  return crypto.createHash("sha256").update(s, "utf8").digest("hex");
+}
+function sourceHashFromText(raw) {
+  return sha256(canonicalizeSourceText(raw));
+}
+function canonStats(label, xs) {
+  const order = ["hp", "atk", "def", "spa", "spd", "spe"];
+  const parts = order.filter((k) => xs[k] != null).map((k) => `${xs[k]} ${k}`);
+  return `${label}:${parts.join(",")}`;
+}
+function evMapFromSet(s) {
+  return {
+    hp: s.ev_hp,
+    atk: s.ev_atk,
+    def: s.ev_def,
+    spa: s.ev_spa,
+    spd: s.ev_spd,
+    spe: s.ev_spe
+  };
+}
+function ivMapFromSet(s) {
+  return {
+    hp: s.iv_hp,
+    atk: s.iv_atk,
+    def: s.iv_def,
+    spa: s.iv_spa,
+    spd: s.iv_spd,
+    spe: s.iv_spe
+  };
+}
+function norm(s) {
+  return (s ?? "").trim();
+}
+function normNum(n) {
+  return n == null ? "" : String(n);
+}
+function setHash(s) {
+  const moves = (s.moves ?? []).map((m) => m.trim()).filter(Boolean).slice(0, 4).join("|");
+  const blob = [
+    `species=${norm(s.species_name)}`,
+    `nick=${norm(s.nickname)}`,
+    `item=${norm(s.item_name)}`,
+    `ability=${norm(s.ability_name)}`,
+    `level=${normNum(s.level)}`,
+    `gender=${norm(s.gender)}`,
+    `shiny=${s.shiny ?? 0}`,
+    `tera=${norm(s.tera_type)}`,
+    `happy=${normNum(s.happiness)}`,
+    `nature=${norm(s.nature)}`,
+    canonStats("ev", evMapFromSet(s)),
+    canonStats("iv", ivMapFromSet(s)),
+    `moves=${moves}`
+  ].join("\n");
+  return sha256(blob);
+}
+function mapSetToDb(s) {
+  return {
+    nickname: s.nickname ?? null,
+    species_name: s.species_name,
+    item_name: s.item_name ?? null,
+    ability_name: s.ability_name ?? null,
+    level: s.level ?? null,
+    gender: s.gender ?? null,
+    shiny: s.shiny ?? 0,
+    tera_type: s.tera_type ?? null,
+    happiness: s.happiness ?? null,
+    nature: s.nature ?? null,
+    ev_hp: s.ev_hp ?? null,
+    ev_atk: s.ev_atk ?? null,
+    ev_def: s.ev_def ?? null,
+    ev_spa: s.ev_spa ?? null,
+    ev_spd: s.ev_spd ?? null,
+    ev_spe: s.ev_spe ?? null,
+    iv_hp: s.iv_hp ?? null,
+    iv_atk: s.iv_atk ?? null,
+    iv_def: s.iv_def ?? null,
+    iv_spa: s.iv_spa ?? null,
+    iv_spd: s.iv_spd ?? null,
+    iv_spe: s.iv_spe ?? null
+  };
+}
 function decodeHtml(s) {
   return s.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&#39;", "'");
 }
@@ -393,18 +1073,13 @@ function parsePokepasteMetaFromHtml(html) {
   })();
   return { title, author, format };
 }
-function sha256(s) {
-  return crypto.createHash("sha256").update(s, "utf8").digest("hex");
-}
 function normalizePokepasteUrl(url) {
-  const m = url.trim().match(/^https?:\/\/pokepast\.es\/([a-zA-Z0-9]+)(?:\/.*)?$/);
+  const u = url == null ? void 0 : url.trim();
+  if (!u) return null;
+  const m = u.match(/^https?:\/\/pokepast\.es\/([a-zA-Z0-9]+)(?:\/.*)?$/);
   if (!m) throw new Error("Invalid Pokepaste URL.");
   const id = m[1];
-  return {
-    id,
-    viewUrl: `https://pokepast.es/${id}`,
-    rawUrl: `https://pokepast.es/${id}/raw`
-  };
+  return { id, viewUrl: `https://pokepast.es/${id}`, rawUrl: `https://pokepast.es/${id}/raw` };
 }
 async function fetchText(url, timeoutMs = 1e4) {
   const ctrl = new AbortController();
@@ -413,14 +1088,11 @@ async function fetchText(url, timeoutMs = 1e4) {
     const res = await fetch(url, {
       signal: ctrl.signal,
       headers: {
-        // Helps avoid occasional “smart” responses
         "User-Agent": "PokeMentor/1.0",
-        "Accept": "text/html, text/plain;q=0.9, */*;q=0.8"
+        Accept: "text/html, text/plain;q=0.9, */*;q=0.8"
       }
     });
-    if (!res.ok) {
-      throw new Error(`Fetch failed (${res.status}) for ${url}`);
-    }
+    if (!res.ok) throw new Error(`Fetch failed (${res.status}) for ${url}`);
     return await res.text();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -429,352 +1101,659 @@ async function fetchText(url, timeoutMs = 1e4) {
     clearTimeout(t);
   }
 }
-function emptyStats() {
-  return { hp: null, atk: null, def: null, spa: null, spd: null, spe: null };
-}
-function parseEvIvLine(line) {
-  var _a;
-  const out = {};
-  const parts = ((_a = line.split(":")[1]) == null ? void 0 : _a.split("/").map((p) => p.trim())) ?? [];
-  for (const p of parts) {
-    const mm = p.match(/^(\d+)\s+(HP|Atk|Def|SpA|SpD|Spe)$/i);
-    if (!mm) continue;
-    const val = Number(mm[1]);
-    const statToken = mm[2].toLowerCase();
-    const stat = statToken === "hp" ? "hp" : statToken === "atk" ? "atk" : statToken === "def" ? "def" : statToken === "spa" ? "spa" : statToken === "spd" ? "spd" : "spe";
-    out[stat] = val;
-  }
-  return out;
-}
-function parseShowdownExport(text) {
-  const blocks = text.replace(/\r\n/g, "\n").split(/\n\s*\n/g).map((b) => b.trim()).filter(Boolean);
-  const sets = [];
-  for (const block of blocks) {
-    const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
-    if (lines.length === 0) continue;
-    const first = lines[0];
-    const [left, itemPart] = first.split(" @ ");
-    const item_name = itemPart ? itemPart.trim() : null;
-    let gender = null;
-    let left2 = left.trim();
-    const genderMatch = left2.match(/\((M|F)\)\s*$/);
-    if (genderMatch) {
-      gender = genderMatch[1];
-      left2 = left2.replace(/\((M|F)\)\s*$/, "").trim();
-    }
-    let nickname = null;
-    let species_name = left2;
-    const nm = left2.match(/^(.+)\s+\((.+)\)$/);
-    if (nm) {
-      nickname = nm[1].trim();
-      species_name = nm[2].trim();
-    }
-    let ability_name = null;
-    let level = null;
-    let shiny = 0;
-    let tera_type = null;
-    let happiness = null;
-    let nature = null;
-    let ev = emptyStats();
-    let iv = emptyStats();
-    const moves = [];
-    for (const line of lines.slice(1)) {
-      if (line.startsWith("Ability:")) {
-        ability_name = line.slice("Ability:".length).trim() || null;
-      } else if (line.startsWith("Level:")) {
-        const n = Number(line.slice("Level:".length).trim());
-        level = Number.isFinite(n) ? n : null;
-      } else if (line === "Shiny: Yes") {
-        shiny = 1;
-      } else if (line.startsWith("Happiness:")) {
-        const n = Number(line.slice("Happiness:".length).trim());
-        happiness = Number.isFinite(n) ? n : null;
-      } else if (line.startsWith("Tera Type:")) {
-        tera_type = line.slice("Tera Type:".length).trim() || null;
-      } else if (line.startsWith("EVs:")) {
-        const m = parseEvIvLine(line);
-        ev = { ...ev, ...m };
-      } else if (line.startsWith("IVs:")) {
-        const m = parseEvIvLine(line);
-        iv = { ...iv, ...m };
-      } else if (line.endsWith(" Nature")) {
-        nature = line.replace(" Nature", "").trim() || null;
-      } else if (line.startsWith("- ")) {
-        moves.push(line.slice(2).trim());
+function teamImportService(db2, deps) {
+  const repo = deps.teamsRepo;
+  return {
+    async importFromPokepaste(args) {
+      var _a, _b, _c, _d;
+      const paste = (args.paste_text ?? "").trim();
+      const norm2 = normalizePokepasteUrl(args.url);
+      if (!paste && !norm2) {
+        throw new Error("Provide either a Pokepaste URL or pasted Showdown export text.");
       }
+      let rawText;
+      let meta = { title: null, author: null, format: null };
+      let source_url = null;
+      if (paste) {
+        rawText = paste;
+      } else {
+        const { viewUrl, rawUrl } = norm2;
+        source_url = viewUrl;
+        const [fetchedRaw, viewHtml] = await Promise.all([fetchText(rawUrl), fetchText(viewUrl)]);
+        rawText = fetchedRaw;
+        meta = parsePokepasteMetaFromHtml(viewHtml);
+      }
+      const canonicalSource = canonicalizeSourceText(rawText);
+      const source_hash = sourceHashFromText(canonicalSource);
+      const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+      const parsed = parseShowdownExport(canonicalSource);
+      const parsedSets = parsed.sets;
+      if (parsed.warnings.length) {
+        console.log("[team import] parse warnings", parsed.warnings);
+      }
+      const finalName = ((_a = args.name) == null ? void 0 : _a.trim()) || ((_b = meta.title) == null ? void 0 : _b.trim()) || "Imported Team";
+      const finalFormat = ((_c = args.format_ps) == null ? void 0 : _c.trim()) || ((_d = meta.format) == null ? void 0 : _d.trim()) || null;
+      const result = db2.transaction(() => {
+        var _a2;
+        const team_id = randomUUID();
+        const version_id = randomUUID();
+        const version_num = 1;
+        repo.insertTeam({ id: team_id, name: finalName, format_ps: finalFormat, now: nowIso });
+        repo.insertTeamVersion({
+          id: version_id,
+          team_id,
+          version_num,
+          source_url,
+          source_hash,
+          source_text: rawText,
+          source_title: meta.title,
+          source_author: meta.author,
+          source_format: meta.format,
+          now: nowIso
+        });
+        let slotIndex = 1;
+        for (const s of parsedSets.slice(0, 6)) {
+          const set_hash = setHash(s);
+          const existingId = repo.findPokemonSetIdByHash(set_hash);
+          const pokemon_set_id = existingId ?? randomUUID();
+          if (!existingId) {
+            repo.insertPokemonSet({
+              id: pokemon_set_id,
+              ...mapSetToDb(s),
+              set_hash,
+              now: nowIso
+            });
+            for (let i = 0; i < Math.min(s.moves.length, 4); i++) {
+              const moveName = (_a2 = s.moves[i]) == null ? void 0 : _a2.trim();
+              if (!moveName) continue;
+              const move_id = repo.getOrCreateMoveId(moveName);
+              repo.insertPokemonSetMove({ pokemon_set_id, move_slot: i + 1, move_id });
+            }
+          }
+          repo.insertTeamSlot({ team_version_id: version_id, slot_index: slotIndex, pokemon_set_id });
+          slotIndex += 1;
+        }
+        return { team_id, version_id, version_num, slots_inserted: Math.min(parsedSets.length, 6) };
+      })();
+      const linking = postCommitTeamVersionLinking(
+        db2,
+        {
+          teamsRepo: deps.teamsRepo
+        },
+        {
+          teamVersionId: result.version_id,
+          formatKeyHint: finalFormat,
+          limit: 500
+        }
+      );
+      return { ...result, linking };
     }
-    sets.push({
-      nickname,
+  };
+}
+class TeamActiveService {
+  constructor(repo) {
+    this.repo = repo;
+  }
+  /**
+   * Marks the given team as active (and clears any previous active team).
+   * Returns { ok: true } for API convenience.
+   */
+  setActiveTeam(teamId) {
+    this.repo.setActiveTeam(teamId);
+    return { ok: true };
+  }
+  /**
+   * Returns a lightweight summary row for the active team, or null if none.
+   */
+  getActiveTeamSummary() {
+    return this.repo.getActiveTeamSummary();
+  }
+  /**
+   * Returns the active team plus high-level activity counters:
+   * - last import time
+   * - last linked battle time
+   * - total linked battles
+   */
+  getActiveTeamActivity() {
+    return this.repo.getActiveTeamActivity();
+  }
+  /**
+   * Convenience helper if you prefer a single endpoint that both sets
+   * the active team and returns the activity payload for immediate UI refresh.
+   */
+  setActiveTeamAndGetActivity(teamId) {
+    this.setActiveTeam(teamId);
+    return this.getActiveTeamActivity();
+  }
+}
+function battleRepo(db2) {
+  const getUserSideStmt = db2.prepare(`
+    SELECT side
+    FROM battle_sides
+    WHERE battle_id = ? AND is_user = 1
+    LIMIT 1
+  `);
+  const getBattleMetaStmt = db2.prepare(`
+    SELECT format_id, format_name, game_type
+    FROM battles
+    WHERE id = ?
+    LIMIT 1
+  `);
+  const getRevealedSpeciesStmt = db2.prepare(`
+    SELECT DISTINCT TRIM(species_name) AS species_name
+    FROM battle_revealed_sets
+    WHERE battle_id = ? AND side = ?
+      AND TRIM(COALESCE(species_name,'')) <> ''
+    ORDER BY species_name ASC
+  `);
+  const getPreviewSpeciesStmt = db2.prepare(`
+    SELECT DISTINCT TRIM(species_name) AS species_name
+    FROM battle_preview_pokemon
+    WHERE battle_id = ? AND side = ?
+      AND TRIM(COALESCE(species_name,'')) <> ''
+    ORDER BY slot_index ASC
+  `);
+  const readExistingLinkStmt = db2.prepare(`
+    SELECT team_version_id, match_confidence, matched_by
+    FROM battle_team_links
+    WHERE battle_id = ? AND side = ?
+    LIMIT 1
+  `);
+  const upsertLinkStmt = db2.prepare(`
+    INSERT INTO battle_team_links (
+      battle_id, side, team_version_id,
+      match_confidence, match_method,
+      matched_at, matched_by
+    ) VALUES (
+      @battle_id, @side, @team_version_id,
+      @match_confidence, @match_method,
+      @matched_at, @matched_by
+    )
+    ON CONFLICT(battle_id, side) DO UPDATE SET
+      team_version_id = excluded.team_version_id,
+      match_confidence = excluded.match_confidence,
+      match_method = excluded.match_method,
+      matched_at = excluded.matched_at,
+      matched_by = excluded.matched_by
+  `);
+  const listCandidateBattleIdsByFormatStmt = db2.prepare(`
+    SELECT b.id
+    FROM battles b
+    WHERE COALESCE(b.format_id, b.format_name, '') LIKE ? || '%'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM battle_team_links l
+        JOIN battle_sides s
+          ON s.battle_id = l.battle_id
+        AND s.side = l.side
+        AND s.is_user = 1
+        WHERE l.battle_id = b.id
+          AND l.team_version_id IS NOT NULL
+      )
+    ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
+    LIMIT ?
+  `);
+  const listCandidateBattleIdsAnyFormatStmt = db2.prepare(`
+    SELECT b.id
+    FROM battles b
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM battle_team_links l
+      JOIN battle_sides s
+        ON s.battle_id = l.battle_id
+      AND s.side = l.side
+      AND s.is_user = 1
+      WHERE l.battle_id = b.id
+        AND l.team_version_id IS NOT NULL
+    )
+    ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
+    LIMIT ?
+  `);
+  const listBattleEventsStmt = db2.prepare(`
+    SELECT event_index, turn_num, line_type, raw_line
+    FROM battle_events
+    WHERE battle_id = ?
+    ORDER BY event_index ASC
+  `);
+  const previewCountsBySideStmt = db2.prepare(`
+    SELECT side, COUNT(*) AS c
+    FROM battle_preview_pokemon
+    WHERE battle_id = ?
+    GROUP BY side
+  `);
+  const revealedCountsBySideStmt = db2.prepare(`
+    SELECT side, COUNT(*) AS c
+    FROM battle_revealed_sets
+    WHERE battle_id = ?
+    GROUP BY side
+  `);
+  const listBattlesStmt = db2.prepare(`
+    SELECT
+      b.id,
+      b.replay_id,
+      b.format_id,
+      b.format_name,
+      b.game_type,
+      b.played_at,
+      b.upload_time,
+      b.created_at,
+      b.is_rated,
+      b.is_private,
+      b.winner_side,
+      b.winner_name,
+
+      us.side AS user_side,
+      us.player_name AS user_player_name,
+
+      os.player_name AS opponent_name,
+
+      CASE
+        WHEN us.side IS NULL OR b.winner_side IS NULL THEN NULL
+        WHEN b.winner_side = us.side THEN 'win'
+        ELSE 'loss'
+      END AS result,
+
+      l.team_version_id AS linked_team_version_id,
+      l.match_confidence AS link_confidence,
+      l.match_method AS link_method,
+      l.matched_by AS link_matched_by,
+
+      tv.team_id AS team_id,
+      t.name AS team_name,
+
+      COALESCE(
+        NULLIF((
+          SELECT json_group_array(
+            json_object('species_name', pi.species_name, 'is_lead', bbp.is_lead)
+          )
+          FROM battle_brought_pokemon bbp
+          JOIN battle_pokemon_instances pi ON pi.id = bbp.pokemon_instance_id
+          WHERE bbp.battle_id = b.id
+            AND bbp.side = us.side
+        ), '[]'),
+        (
+          SELECT json_group_array(
+            json_object('species_name', p.species_name, 'is_lead', 0)
+          )
+          FROM (
+            SELECT species_name
+            FROM battle_preview_pokemon
+            WHERE battle_id = b.id AND side = us.side
+            ORDER BY slot_index
+          ) p
+        ),
+        '[]'
+      ) AS user_brought_json,
+
+      COALESCE(
+        NULLIF((
+          SELECT json_group_array(
+            json_object('species_name', pi.species_name, 'is_lead', bbp.is_lead)
+          )
+          FROM battle_brought_pokemon bbp
+          JOIN battle_pokemon_instances pi ON pi.id = bbp.pokemon_instance_id
+          WHERE bbp.battle_id = b.id
+            AND bbp.side = CASE
+              WHEN us.side = 'p1' THEN 'p2'
+              WHEN us.side = 'p2' THEN 'p1'
+              ELSE NULL
+            END
+        ), '[]'),
+        (
+          SELECT json_group_array(
+            json_object('species_name', p.species_name, 'is_lead', 0)
+          )
+          FROM (
+            SELECT species_name
+            FROM battle_preview_pokemon
+            WHERE battle_id = b.id AND side = CASE
+              WHEN us.side = 'p1' THEN 'p2'
+              WHEN us.side = 'p2' THEN 'p1'
+              ELSE NULL
+            END
+            ORDER BY slot_index
+          ) p
+        ),
+        '[]'
+      ) AS opponent_brought_json
+
+    FROM battles b
+
+    LEFT JOIN battle_sides us
+      ON us.battle_id = b.id AND us.is_user = 1
+
+    LEFT JOIN battle_sides os
+      ON os.battle_id = b.id
+    AND os.side = CASE
+        WHEN us.side = 'p1' THEN 'p2'
+        WHEN us.side = 'p2' THEN 'p1'
+        ELSE NULL
+      END
+
+    LEFT JOIN battle_team_links l
+      ON l.battle_id = b.id AND l.side = us.side
+
+    LEFT JOIN team_versions tv
+      ON tv.id = l.team_version_id
+
+    LEFT JOIN teams t
+      ON t.id = tv.team_id
+
+    ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
+    LIMIT @limit OFFSET @offset;
+  `);
+  const getBattleRowStmt = db2.prepare(`
+    SELECT
+      id,
+      replay_id,
+      replay_url,
+      replay_json_url,
+      format_id,
+      format_name,
+      gen,
+      game_type,
+      upload_time,
+      played_at,
+      views,
+      rating,
+      is_private,
+      is_rated,
+      winner_side,
+      winner_name,
+      created_at
+    FROM battles
+    WHERE id = ?
+    LIMIT 1
+  `);
+  const listBattleSidesStmt = db2.prepare(`
+    SELECT side, is_user, player_name, avatar, rating
+    FROM battle_sides
+    WHERE battle_id = ?
+    ORDER BY side ASC
+  `);
+  const listBattlePreviewStmt = db2.prepare(`
+    SELECT side, slot_index, species_name, level, gender, shiny, raw_text
+    FROM battle_preview_pokemon
+    WHERE battle_id = ?
+    ORDER BY side ASC, slot_index ASC
+  `);
+  const listBattleRevealedStmt = db2.prepare(`
+    SELECT
+      side,
       species_name,
+      nickname,
       item_name,
       ability_name,
+      tera_type,
       level,
       gender,
       shiny,
-      tera_type,
-      happiness,
-      nature,
-      ev_hp: ev.hp,
-      ev_atk: ev.atk,
-      ev_def: ev.def,
-      ev_spa: ev.spa,
-      ev_spd: ev.spd,
-      ev_spe: ev.spe,
-      iv_hp: iv.hp,
-      iv_atk: iv.atk,
-      iv_def: iv.def,
-      iv_spa: iv.spa,
-      iv_spd: iv.spd,
-      iv_spe: iv.spe,
-      moves
-    });
-  }
-  return sets;
-}
-function canonicalizeSet(s) {
-  return [
-    `species=${s.species_name}`,
-    `nickname=${s.nickname ?? ""}`,
-    `item=${s.item_name ?? ""}`,
-    `ability=${s.ability_name ?? ""}`,
-    `level=${s.level ?? ""}`,
-    `gender=${s.gender ?? ""}`,
-    `shiny=${s.shiny}`,
-    `tera=${s.tera_type ?? ""}`,
-    `happiness=${s.happiness ?? ""}`,
-    `nature=${s.nature ?? ""}`,
-    `ev=${[s.ev_hp, s.ev_atk, s.ev_def, s.ev_spa, s.ev_spd, s.ev_spe].map((v) => v ?? "").join(",")}`,
-    `iv=${[s.iv_hp, s.iv_atk, s.iv_def, s.iv_spa, s.iv_spd, s.iv_spe].map((v) => v ?? "").join(",")}`,
-    `moves=${s.moves.join("|")}`
-  ].join("\n");
-}
-async function importTeamFromPokepaste(args) {
-  var _a, _b, _c, _d;
-  const { viewUrl, rawUrl } = normalizePokepasteUrl(args.url);
-  const [rawText, viewHtml] = await Promise.all([
-    fetchText(rawUrl),
-    fetchText(viewUrl)
-  ]);
-  const meta = parsePokepasteMetaFromHtml(viewHtml);
-  const parsedSets = parseShowdownExport(rawText);
-  if (parsedSets.length === 0) throw new Error("No Pokémon sets found in Pokepaste.");
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const source_hash = sha256(rawText.trim());
-  const finalName = ((_a = args.name) == null ? void 0 : _a.trim()) || ((_b = meta.title) == null ? void 0 : _b.trim()) || "Imported Team";
-  const finalFormat = ((_c = args.format_ps) == null ? void 0 : _c.trim()) || ((_d = meta.format) == null ? void 0 : _d.trim()) || null;
-  const db2 = getDb();
-  const q = teamsQueries(db2);
-  return db2.transaction(() => {
-    var _a2;
-    const team_id = randomUUID();
-    const version_id = randomUUID();
-    const version_num = 1;
-    q.insertTeam({ id: team_id, name: finalName, format_ps: finalFormat, now });
-    q.insertTeamVersion({
-      id: version_id,
-      team_id,
-      version_num,
-      source_url: viewUrl,
-      source_hash,
-      source_text: rawText,
-      source_title: meta.title,
-      source_author: meta.author,
-      source_format: meta.format,
-      now
-    });
-    let slotIndex = 1;
-    for (const s of parsedSets.slice(0, 6)) {
-      const set_hash = sha256(canonicalizeSet(s));
-      const existingId = q.findPokemonSetIdByHash(set_hash);
-      const pokemon_set_id = existingId ?? randomUUID();
-      if (!existingId) {
-        q.insertPokemonSet({
-          id: pokemon_set_id,
-          nickname: s.nickname,
-          species_name: s.species_name,
-          item_name: s.item_name,
-          ability_name: s.ability_name,
-          level: s.level,
-          gender: s.gender,
-          shiny: s.shiny,
-          tera_type: s.tera_type,
-          happiness: s.happiness,
-          nature: s.nature,
-          ev_hp: s.ev_hp,
-          ev_atk: s.ev_atk,
-          ev_def: s.ev_def,
-          ev_spa: s.ev_spa,
-          ev_spd: s.ev_spd,
-          ev_spe: s.ev_spe,
-          iv_hp: s.iv_hp,
-          iv_atk: s.iv_atk,
-          iv_def: s.iv_def,
-          iv_spa: s.iv_spa,
-          iv_spd: s.iv_spd,
-          iv_spe: s.iv_spe,
-          set_hash,
-          now
-        });
-        for (let i = 0; i < Math.min(s.moves.length, 4); i++) {
-          const moveName = (_a2 = s.moves[i]) == null ? void 0 : _a2.trim();
-          if (!moveName) continue;
-          const move_id = q.getOrCreateMoveId(moveName);
-          q.insertPokemonSetMove({
-            pokemon_set_id,
-            move_slot: i + 1,
-            move_id
-          });
-        }
-      }
-      q.insertTeamSlot({ team_version_id: version_id, slot_index: slotIndex, pokemon_set_id });
-      slotIndex += 1;
-    }
-    return {
-      team_id,
-      version_id,
-      version_num,
-      slots_inserted: Math.min(parsedSets.length, 6)
-    };
-  })();
-}
-function listTeams() {
-  const db2 = getDb();
-  return teamsQueries(db2).listTeams();
-}
-function setTeamActive(teamId) {
-  const db2 = getDb();
-  const q = teamsQueries(db2);
-  q.setActiveTeam(teamId);
-  return { ok: true };
-}
-function getActiveTeamActivity() {
-  const db2 = getDb();
-  return teamsQueries(db2).getActiveTeamActivity();
-}
-function deleteTeam(teamId) {
-  const db2 = getDb();
-  const q = teamsQueries(db2);
-  q.deleteTeam(teamId);
-  return { ok: true };
-}
-function getTeamDetails(teamId) {
-  const db2 = getDb();
-  const q = teamsQueries(db2);
-  return q.getTeamDetails(teamId);
-}
-function getActiveTeamSummary() {
-  const db2 = getDb();
-  return teamsQueries(db2).getActiveTeamSummary();
-}
-const BASE = "https://replay.pokemonshowdown.com";
-function normalizeReplayInput(line) {
-  const raw = line.trim();
-  if (!raw) throw new Error("Empty line");
-  if (raw.startsWith("http://") || raw.startsWith("https://")) {
-    const u = new URL(raw);
-    const path2 = u.pathname.replace(/^\//, "");
-    const replayId2 = path2.replace(/\.json$/, "");
-    if (!replayId2) throw new Error("Could not extract replay id from URL");
-    const replayUrl2 = `${BASE}/${replayId2}`;
-    return { replayId: replayId2, replayUrl: replayUrl2, jsonUrl: `${replayUrl2}.json` };
-  }
-  const replayId = raw.replace(/\.json$/, "");
-  const replayUrl = `${BASE}/${replayId}`;
-  return { replayId, replayUrl, jsonUrl: `${replayUrl}.json` };
-}
-async function fetchReplayJson(jsonUrl) {
-  const res = await fetch(jsonUrl, { method: "GET" });
-  if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
-  const data = await res.json();
-  if (!(data == null ? void 0 : data.id) || !(data == null ? void 0 : data.log)) throw new Error("Unexpected JSON payload (missing id/log)");
-  return data;
-}
-function uuid$1() {
-  return crypto.randomUUID();
-}
-function parseSwitchLike(rawLine) {
-  if (!rawLine.startsWith("|")) return null;
-  const parts = rawLine.split("|");
-  const lineType = parts[1];
-  if (lineType !== "switch" && lineType !== "drag" && lineType !== "replace") return null;
-  const who = parts[2] ?? "";
-  const details = parts[3] ?? "";
-  const m = who.match(/^(p[12][ab]):/);
-  if (!m) return null;
-  const position = m[1];
-  const side = position.slice(0, 2);
-  const species = (details.split(",")[0] ?? "").trim();
-  if (!species) return null;
-  return { position, side, species };
-}
-function deriveBroughtFromEvents(db2, battleId) {
-  const events = db2.prepare(
-    `
-    SELECT event_index, turn_num, raw_line
-    FROM battle_events
+      moves_json,
+      raw_fragment
+    FROM battle_revealed_sets
     WHERE battle_id = ?
-      AND line_type IN ('switch','drag','replace')
-    ORDER BY event_index ASC
-    `
-  ).all(battleId);
-  if (events.length === 0) return { insertedInstances: 0, insertedBrought: 0 };
-  const broughtBySide = { p1: /* @__PURE__ */ new Set(), p2: /* @__PURE__ */ new Set() };
-  const firstByPos = /* @__PURE__ */ new Map();
-  for (const e of events) {
-    const parsed = parseSwitchLike(e.raw_line);
-    if (!parsed) continue;
-    broughtBySide[parsed.side].add(parsed.species);
-    if (!firstByPos.has(parsed.position)) {
-      firstByPos.set(parsed.position, { species: parsed.species, turn_num: e.turn_num, event_index: e.event_index });
-    }
-  }
-  const leadKey = /* @__PURE__ */ new Set();
-  for (const [pos, info] of firstByPos.entries()) {
-    const side = pos.slice(0, 2);
-    leadKey.add(`${side}|${info.species}`);
-  }
-  const getInstance = db2.prepare(`
-    SELECT id
-    FROM battle_pokemon_instances
-    WHERE battle_id = ? AND side = ? AND species_name = ?
+    ORDER BY side ASC, species_name ASC
+  `);
+  const readUserSideLinkStmt = db2.prepare(`
+    SELECT
+      l.team_version_id,
+      l.match_confidence,
+      l.match_method,
+      l.matched_by
+    FROM battle_team_links l
+    JOIN battle_sides s
+      ON s.battle_id = l.battle_id
+     AND s.side = l.side
+     AND s.is_user = 1
+    WHERE l.battle_id = ?
     LIMIT 1
   `);
-  const insertInstance = db2.prepare(`
-    INSERT INTO battle_pokemon_instances (id, battle_id, side, species_name, shiny)
-    VALUES (?, ?, ?, ?, 0)
-  `);
-  const insertBrought = db2.prepare(`
-    INSERT OR IGNORE INTO battle_brought_pokemon (battle_id, side, pokemon_instance_id, is_lead, fainted)
-    VALUES (?, ?, ?, ?, 0)
-  `);
-  const updateLead = db2.prepare(`
-    UPDATE battle_brought_pokemon
-    SET is_lead = CASE WHEN is_lead = 1 THEN 1 ELSE ? END
-    WHERE battle_id = ? AND side = ? AND pokemon_instance_id = ?
-  `);
-  let insertedInstances = 0;
-  let insertedBrought = 0;
-  db2.transaction(() => {
-    for (const side of ["p1", "p2"]) {
-      for (const species of broughtBySide[side]) {
-        let inst = getInstance.get(battleId, side, species);
-        if (!inst) {
-          const id = uuid$1();
-          insertInstance.run(id, battleId, side, species);
-          insertedInstances += 1;
-          inst = { id };
-        }
-        const isLead = leadKey.has(`${side}|${species}`) ? 1 : 0;
-        const info = insertBrought.run(battleId, side, inst.id, isLead);
-        if (typeof (info == null ? void 0 : info.changes) === "number" && info.changes > 0) {
-          insertedBrought += info.changes;
-        } else {
-          if (isLead) updateLead.run(1, battleId, side, inst.id);
-        }
-      }
+  function normalizeFormatKey(format_id, format_name) {
+    const key = String(format_id ?? format_name ?? "").trim();
+    return key.length ? key : null;
+  }
+  function uniqPreserveOrder(xs) {
+    const out = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const x of xs) {
+      const v = x.trim();
+      if (!v) continue;
+      const k = v.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(v);
     }
+    return out;
+  }
+  return {
+    getUserSide(battleId) {
+      const row = getUserSideStmt.get(battleId);
+      return (row == null ? void 0 : row.side) ?? null;
+    },
+    getBattleMeta(battleId) {
+      const row = getBattleMetaStmt.get(battleId);
+      if (!row) return null;
+      const formatKey = normalizeFormatKey(row.format_id, row.format_name);
+      if (!formatKey) return null;
+      return { formatKey, gameType: row.game_type ?? null };
+    },
+    getRevealedSpecies(battleId, side) {
+      const rows = getRevealedSpeciesStmt.all(battleId, side);
+      return uniqPreserveOrder(rows.map((r) => (r.species_name ?? "").trim()).filter(Boolean));
+    },
+    getPreviewSpecies(battleId, side) {
+      const rows = getPreviewSpeciesStmt.all(battleId, side);
+      return uniqPreserveOrder(rows.map((r) => (r.species_name ?? "").trim()).filter(Boolean));
+    },
+    readExistingLink(battleId, side) {
+      const row = readExistingLinkStmt.get(battleId, side);
+      return row ?? null;
+    },
+    upsertLink(args) {
+      const matched_at = args.matchedAtUnix ?? Math.floor(Date.now() / 1e3);
+      upsertLinkStmt.run({
+        battle_id: args.battleId,
+        side: args.side,
+        team_version_id: args.teamVersionId,
+        match_confidence: args.confidence,
+        match_method: args.method,
+        matched_at,
+        matched_by: args.matchedBy
+      });
+    },
+    listBackfillCandidateBattleIds(args) {
+      var _a;
+      const limit = args.limit;
+      const formatKey = ((_a = args.formatKeyHint) == null ? void 0 : _a.trim()) || null;
+      let rows = [];
+      if (formatKey) {
+        rows = listCandidateBattleIdsByFormatStmt.all(formatKey, limit);
+      }
+      if (!rows.length) {
+        rows = listCandidateBattleIdsAnyFormatStmt.all(limit);
+      }
+      return rows;
+    },
+    // Optional debug helpers (safe to delete if you don’t want them)
+    getPreviewCountsBySide(battleId) {
+      return previewCountsBySideStmt.all(battleId);
+    },
+    getRevealedCountsBySide(battleId) {
+      return revealedCountsBySideStmt.all(battleId);
+    },
+    listBattles(args) {
+      const limit = Math.max(1, Math.min(500, (args == null ? void 0 : args.limit) ?? 200));
+      const offset = Math.max(0, (args == null ? void 0 : args.offset) ?? 0);
+      return listBattlesStmt.all({ limit, offset });
+    },
+    getBattleDetails(battleId) {
+      var _a;
+      const battle = getBattleRowStmt.get(battleId);
+      if (!battle) return null;
+      const sides = listBattleSidesStmt.all(battleId);
+      const preview = listBattlePreviewStmt.all(battleId);
+      const revealed = listBattleRevealedStmt.all(battleId);
+      const userSide = ((_a = sides.find((s) => s.is_user === 1)) == null ? void 0 : _a.side) ?? null;
+      const userLink = readUserSideLinkStmt.get(battleId) ?? null;
+      const events = listBattleEventsStmt.all(battleId);
+      return {
+        battle,
+        sides,
+        preview,
+        revealed,
+        events,
+        userSide,
+        userLink: userLink ? {
+          team_version_id: userLink.team_version_id,
+          match_confidence: userLink.match_confidence,
+          match_method: userLink.match_method,
+          matched_by: userLink.matched_by
+        } : null
+      };
+    }
+  };
+}
+async function fetchReplayJson(jsonUrl) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 2e4);
+  try {
+    const res = await fetch(jsonUrl, { method: "GET", signal: ctrl.signal });
+    if (!res.ok) throw new Error(`Fetch failed (${res.status}) for ${jsonUrl}`);
+    const data = await res.json();
+    if (!(data == null ? void 0 : data.id) || !(data == null ? void 0 : data.log)) throw new Error("Unexpected JSON payload (missing id/log)");
+    return data;
+  } finally {
+    clearTimeout(t);
+  }
+}
+function parsePipeLine$1(line) {
+  const parts = line.split("|");
+  if (parts[0] === "") parts.shift();
+  return parts;
+}
+function parseSideFromActorRef(actorRef) {
+  const t = actorRef.trim().toLowerCase();
+  if (t.startsWith("p1")) return "p1";
+  if (t.startsWith("p2")) return "p2";
+  return null;
+}
+function parseSpeciesFromDetails(details) {
+  const s = (details ?? "").trim();
+  if (!s) return null;
+  const head = s.includes(",") ? s.split(",")[0] : s;
+  const species = head.trim();
+  return species || null;
+}
+function deriveFromEventLine(rawLine) {
+  const parts = parsePipeLine$1(rawLine);
+  const type = (parts[0] ?? "").trim();
+  if (type !== "switch" && type !== "drag" && type !== "replace") return null;
+  const actorRef = parts[1] ?? "";
+  const details = parts[2] ?? "";
+  const side = parseSideFromActorRef(actorRef);
+  if (!side) return null;
+  const species = parseSpeciesFromDetails(details);
+  if (!species) return null;
+  return { side, species, source: type };
+}
+function deriveBroughtFromEvents(db2, battleId) {
+  const selectEventsStmt = db2.prepare(`
+    SELECT event_index, raw_line
+    FROM battle_events
+    WHERE battle_id = ?
+    ORDER BY event_index ASC
+  `);
+  const deleteExistingStmt = db2.prepare(`
+    DELETE FROM battle_brought_pokemon
+    WHERE battle_id = ?
+  `);
+  const insertStmt = db2.prepare(`
+    INSERT INTO battle_brought_pokemon (
+      battle_id, side, species_name, first_seen_event_index, source
+    ) VALUES (
+      @battle_id, @side, @species_name, @first_seen_event_index, @source
+    )
+    ON CONFLICT(battle_id, side, species_name) DO UPDATE SET
+      first_seen_event_index = MIN(first_seen_event_index, excluded.first_seen_event_index),
+      source = excluded.source
+  `);
+  const events = selectEventsStmt.all(battleId);
+  const firstSeen = /* @__PURE__ */ new Map();
+  for (const e of events) {
+    const hit = deriveFromEventLine(e.raw_line);
+    if (!hit) continue;
+    const key = `${battleId}|${hit.side}|${hit.species.toLowerCase()}`;
+    const existing = firstSeen.get(key);
+    if (!existing || e.event_index < existing.first_seen_event_index) {
+      firstSeen.set(key, {
+        battle_id: battleId,
+        side: hit.side,
+        species_name: hit.species,
+        first_seen_event_index: e.event_index,
+        source: hit.source
+      });
+    }
+  }
+  const rows = Array.from(firstSeen.values());
+  db2.transaction(() => {
+    deleteExistingStmt.run(battleId);
+    for (const r of rows) insertStmt.run(r);
   })();
-  return { insertedInstances, insertedBrought };
+  let p1 = 0;
+  let p2 = 0;
+  for (const r of rows) {
+    if (r.side === "p1") p1 += 1;
+    else p2 += 1;
+  }
+  return { p1, p2, total: rows.length };
+}
+function toFiniteInt(v) {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+function cleanToken(s) {
+  return (typeof s === "string" ? s : "").trim();
+}
+function parseMovesCsv(csv) {
+  return csv.split(",").map((m) => m.trim()).filter(Boolean);
+}
+function splitShowteamEntries(blob) {
+  return blob.split("]").map((x) => x.trim()).filter(Boolean);
+}
+function parseShowteamEntry(entry) {
+  const raw = entry;
+  const fields = entry.split("|");
+  const species = cleanToken(fields[0]);
+  if (!species) return null;
+  const nickname = cleanToken(fields[1]) || null;
+  const item = cleanToken(fields[3]) || null;
+  const ability = cleanToken(fields[4]) || null;
+  const movesCsv = cleanToken(fields[5]);
+  const moves = movesCsv ? parseMovesCsv(movesCsv) : [];
+  const genderRaw = cleanToken(fields[8]);
+  const gender = genderRaw === "M" || genderRaw === "F" ? genderRaw : null;
+  const level = fields[11] ? toFiniteInt(fields[11]) : null;
+  const tail = cleanToken(fields[12]);
+  const tera = tail && tail.includes(",") ? cleanToken(tail.split(",").pop()) || null : null;
+  return {
+    species,
+    nickname,
+    item,
+    ability,
+    moves,
+    gender,
+    level,
+    tera,
+    raw
+  };
+}
+function parseShowteamBlob(blob) {
+  const out = [];
+  for (const rawEntry of splitShowteamEntries(blob)) {
+    const parsed = parseShowteamEntry(rawEntry);
+    if (parsed) out.push(parsed);
+  }
+  return out;
 }
 function uuid() {
   return crypto.randomUUID();
@@ -782,17 +1761,17 @@ function uuid() {
 function nowUnix() {
   return Math.floor(Date.now() / 1e3);
 }
-function getSetting$1(db2, key) {
+function getSetting(db2, key) {
   const row = db2.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
   return (row == null ? void 0 : row.value) ?? null;
 }
-function normalizeShowdownName$2(name) {
+function normalizeShowdownName$1(name) {
   return name.trim().replace(/^☆+/, "").replace(/\s+/g, "").toLowerCase();
 }
 function parseLogLines(rawLog) {
   return rawLog.split("\n").map((s) => s.trimEnd()).filter((s) => s.length > 0);
 }
-function parsePipeLine$1(line) {
+function parsePipeLine(line) {
   const parts = line.split("|");
   if (parts[0] === "") parts.shift();
   return parts;
@@ -803,7 +1782,7 @@ function toFiniteNumber(v) {
 }
 function firstTUnix(lines) {
   for (const l of lines) {
-    const parts = parsePipeLine$1(l);
+    const parts = parsePipeLine(l);
     if (parts[0] === "t:" && parts[1]) return toFiniteNumber(parts[1]);
   }
   return null;
@@ -815,7 +1794,7 @@ function extractGenAndGameType(lines) {
   let gen = null;
   let gameType = null;
   for (const l of lines) {
-    const p = parsePipeLine$1(l);
+    const p = parsePipeLine(l);
     if (p[0] === "gen") gen = toFiniteNumber(p[1]);
     if (p[0] === "gametype") gameType = p[1] ?? null;
     if (gen != null && gameType != null) break;
@@ -825,14 +1804,14 @@ function extractGenAndGameType(lines) {
 function findWinner(lines) {
   let winnerName = null;
   for (const l of lines) {
-    const parts = parsePipeLine$1(l);
+    const parts = parsePipeLine(l);
     if (parts[0] === "win" && parts[1]) winnerName = parts[1];
   }
   if (!winnerName) return { winnerName: null, winnerSide: null };
   let p1 = null;
   let p2 = null;
   for (const l of lines) {
-    const parts = parsePipeLine$1(l);
+    const parts = parsePipeLine(l);
     if (parts[0] === "player") {
       const side = parts[1];
       const name = parts[2];
@@ -851,31 +1830,12 @@ function parsePreviewMon(rawText) {
   const gender = bits.includes("M") ? "M" : bits.includes("F") ? "F" : null;
   return { species, level, gender };
 }
-function parseShowteamEntries(blob) {
-  return blob.split("]").map((x) => x.trim()).filter(Boolean);
-}
-function parseShowteamEntry(entry) {
-  var _a;
-  const fields = entry.split("|");
-  const species = (fields[0] ?? "").trim();
-  const nickname = fields[1] ? fields[1] : null;
-  const item = fields[3] ? fields[3] : null;
-  const ability = fields[4] ? fields[4] : null;
-  const movesCsv = fields[5] ?? "";
-  const moves = movesCsv.split(",").map((m) => m.trim()).filter(Boolean);
-  const genderRaw = fields[8];
-  const gender = genderRaw === "M" || genderRaw === "F" ? genderRaw : null;
-  const level = fields[11] ? toFiniteNumber(fields[11]) : null;
-  const tail = fields[12] ?? "";
-  const tera = tail.includes(",") ? ((_a = tail.split(",").pop()) == null ? void 0 : _a.trim()) ?? null : null;
-  return { species, nickname, item, ability, moves, gender, level, tera };
-}
 function makeIsUserFn(db2) {
-  const showdownUsername = getSetting$1(db2, "showdown_username");
-  const showdownUsernameNorm = showdownUsername ? normalizeShowdownName$2(showdownUsername) : null;
+  const showdownUsername = getSetting(db2, "showdown_username");
+  const showdownUsernameNorm = showdownUsername ? normalizeShowdownName$1(showdownUsername) : null;
   return (playerName) => {
     if (!showdownUsernameNorm) return 0;
-    return normalizeShowdownName$2(playerName) === showdownUsernameNorm ? 1 : 0;
+    return normalizeShowdownName$1(playerName) === showdownUsernameNorm ? 1 : 0;
   };
 }
 function prepareStatements(db2) {
@@ -902,14 +1862,26 @@ function prepareStatements(db2) {
       VALUES (@battle_id, @side, @is_user, @player_name, @avatar, @rating);
     `),
     insertPreview: db2.prepare(`
-      INSERT INTO battle_preview_pokemon (battle_id, side, slot_index, species_name, level, gender, shiny, raw_text)
-      VALUES (@battle_id, @side, @slot_index, @species_name, @level, @gender, @shiny, @raw_text);
+      INSERT INTO battle_preview_pokemon (
+        battle_id, side, slot_index,
+        species_name, level, gender, shiny, raw_text
+      )
+      VALUES (
+        @battle_id, @side, @slot_index,
+        @species_name, @level, @gender, @shiny, @raw_text
+      );
     `),
     insertRevealed: db2.prepare(`
       INSERT INTO battle_revealed_sets (
-        battle_id, side, species_name, nickname, item_name, ability_name, tera_type, level, gender, shiny, moves_json, raw_fragment
+        battle_id, side, species_name,
+        nickname, item_name, ability_name, tera_type,
+        level, gender, shiny,
+        moves_json, raw_fragment
       ) VALUES (
-        @battle_id, @side, @species_name, @nickname, @item_name, @ability_name, @tera_type, @level, @gender, @shiny, @moves_json, @raw_fragment
+        @battle_id, @side, @species_name,
+        @nickname, @item_name, @ability_name, @tera_type,
+        @level, @gender, @shiny,
+        @moves_json, @raw_fragment
       );
     `),
     insertEvent: db2.prepare(`
@@ -968,7 +1940,7 @@ function ingestReplayJson(db2, replayUrl, replayJsonUrl, json) {
       created_at: now
     });
     for (const raw of lines) {
-      const parts = parsePipeLine$1(raw);
+      const parts = parsePipeLine(raw);
       const type = parts[0] ?? "unknown";
       if (type === "t:") currentT = toFiniteNumber(parts[1]);
       if (type === "turn") currentTurn = toFiniteNumber(parts[1]);
@@ -1011,11 +1983,10 @@ function ingestReplayJson(db2, replayUrl, replayJsonUrl, json) {
       }
       if (type === "showteam") {
         const side = parts[1];
-        const blob = parts[2] ?? "";
+        const blob = parts.slice(2).join("|");
         if (side === "p1" || side === "p2") {
-          for (const entry of parseShowteamEntries(blob)) {
-            const parsed = parseShowteamEntry(entry);
-            if (!parsed.species) continue;
+          const entries = parseShowteamBlob(blob);
+          for (const parsed of entries) {
             stmts.insertRevealed.run({
               battle_id: battleId,
               side,
@@ -1028,7 +1999,7 @@ function ingestReplayJson(db2, replayUrl, replayJsonUrl, json) {
               gender: parsed.gender,
               shiny: 0,
               moves_json: JSON.stringify(parsed.moves),
-              raw_fragment: entry
+              raw_fragment: parsed.raw
             });
           }
         }
@@ -1058,255 +2029,130 @@ function ingestReplayJson(db2, replayUrl, replayJsonUrl, json) {
   deriveBroughtFromEvents(db2, battleId);
   return { battleId };
 }
-async function importBattlesFromReplaysText(args) {
-  const db2 = getDb();
-  const inputs = Array.from(
-    new Set(
-      args.text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
-    )
-  );
-  const rows = [];
-  let okCount = 0;
-  let failCount = 0;
-  for (const input of inputs) {
-    try {
-      const { replayId, replayUrl, jsonUrl } = normalizeReplayInput(input);
-      const existing = db2.prepare("SELECT id FROM battles WHERE replay_id = ?").get(replayId);
-      if (existing == null ? void 0 : existing.id) {
-        rows.push({ input, ok: true, replayId, battleId: existing.id });
-        okCount += 1;
+function extractReplayId(input) {
+  const s = input.trim();
+  if (!s) return null;
+  const m = s.match(/replay\.pokemonshowdown\.com\/([a-z0-9]+-\d+)(?:\.json)?/i) ?? s.match(/^([a-z0-9]+-\d+)$/i);
+  return (m == null ? void 0 : m[1]) ?? null;
+}
+function replayUrlFromId(id) {
+  return `https://replay.pokemonshowdown.com/${id}`;
+}
+function replayJsonUrlFromId(id) {
+  return `https://replay.pokemonshowdown.com/${id}.json`;
+}
+function battleIngestService(db2, deps) {
+  const { battleRepo: battleRepo2, battleLinkService } = deps;
+  async function importFromReplaysText(text) {
+    const inputs = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    const rows = [];
+    const seen = /* @__PURE__ */ new Set();
+    const replayIds = [];
+    for (const raw of inputs) {
+      const id = extractReplayId(raw);
+      if (!id) {
+        rows.push({ input: raw, ok: false, error: "Unrecognized replay URL / id." });
         continue;
       }
-      const json = await fetchReplayJson(jsonUrl);
-      const tx = db2.transaction(() => {
-        const { battleId: battleId2 } = ingestReplayJson(db2, replayUrl, jsonUrl, json);
-        return battleId2;
-      });
-      const battleId = tx();
-      rows.push({ input, ok: true, replayId, battleId });
-      okCount += 1;
-    } catch (e) {
-      rows.push({ input, ok: false, error: e instanceof Error ? e.message : String(e) });
-      failCount += 1;
+      const k = id.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      replayIds.push(id);
     }
-  }
-  return { okCount, failCount, rows };
-}
-function getSetting(db2, key) {
-  const row = db2.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
-  return (row == null ? void 0 : row.value) ?? null;
-}
-function normalizeShowdownName$1(name) {
-  return name.trim().replace(/^☆+/, "").replace(/\s+/g, "").toLowerCase();
-}
-function parsePipeLine(raw) {
-  const parts = raw.split("|");
-  if (parts[0] === "") parts.shift();
-  return parts;
-}
-function speciesFromDetails(details) {
-  return (details.split(",")[0] ?? "").trim();
-}
-function sideFromActor(actor) {
-  const s = actor.slice(0, 2);
-  return s === "p1" || s === "p2" ? s : null;
-}
-function deriveForBattle(events, gameType) {
-  let p1_expected = null;
-  let p2_expected = null;
-  const p1SeenOrder = [];
-  const p2SeenOrder = [];
-  const p1SeenSet = /* @__PURE__ */ new Set();
-  const p2SeenSet = /* @__PURE__ */ new Set();
-  for (const e of events) {
-    const parts = parsePipeLine(e.raw_line);
-    const t = parts[0] ?? "";
-    if (t === "teamsize") {
-      const side = parts[1];
-      const n = parts[2] ? Number(parts[2]) : NaN;
-      if ((side === "p1" || side === "p2") && Number.isFinite(n)) {
-        if (side === "p1") p1_expected = n;
-        if (side === "p2") p2_expected = n;
-      }
-      continue;
-    }
-    if (t === "switch" || t === "drag" || t === "replace") {
-      const actor = parts[1] ?? "";
-      const details = parts[2] ?? "";
-      const side = sideFromActor(actor);
-      const species = speciesFromDetails(details);
-      if (!side || !species) continue;
-      if (side === "p1") {
-        if (!p1SeenSet.has(species)) {
-          p1SeenSet.add(species);
-          p1SeenOrder.push(species);
-        }
-      } else {
-        if (!p2SeenSet.has(species)) {
-          p2SeenSet.add(species);
-          p2SeenOrder.push(species);
-        }
+    for (const replayId of replayIds) {
+      const replayUrl = replayUrlFromId(replayId);
+      const replayJsonUrl = replayJsonUrlFromId(replayId);
+      try {
+        const json = await fetchReplayJson(replayJsonUrl);
+        const { battleId } = ingestReplayJson(db2, replayUrl, replayJsonUrl, json);
+        const meta = battleRepo2.getBattleMeta(battleId);
+        battleLinkService.autoLinkBattleForUserSide({
+          battleId,
+          formatKeyHint: (meta == null ? void 0 : meta.formatKey) ?? null
+        });
+        rows.push({ input: replayUrl, ok: true, replayId, battleId });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        rows.push({ input: replayUrl, ok: false, error: msg });
       }
     }
+    const okCount = rows.filter((r) => r.ok).length;
+    const failCount = rows.length - okCount;
+    return { okCount, failCount, rows };
   }
-  const leadCount = gameType === "doubles" ? 2 : 1;
+  function relinkBattle(battleId) {
+    const meta = battleRepo2.getBattleMeta(battleId);
+    battleLinkService.autoLinkBattleForUserSide({
+      battleId,
+      formatKeyHint: (meta == null ? void 0 : meta.formatKey) ?? null
+    });
+    return { ok: true };
+  }
   return {
-    p1_expected,
-    p2_expected,
-    p1_seen: p1SeenOrder.map((s, idx) => ({ species_name: s, is_lead: idx < leadCount })),
-    p2_seen: p2SeenOrder.map((s, idx) => ({ species_name: s, is_lead: idx < leadCount }))
+    importFromReplaysText,
+    relinkBattle
   };
 }
-const MAX_IDS_PER_CHUNK = 900;
-function listBattles(args = {}) {
-  const db2 = getDb();
-  const limit = Math.min(Math.max(args.limit ?? 200, 1), 1e3);
-  const offset = Math.max(args.offset ?? 0, 0);
-  const showdownUsername = getSetting(db2, "showdown_username");
-  showdownUsername ? normalizeShowdownName$1(showdownUsername) : null;
-  const baseStmt = db2.prepare(`
-    WITH sides AS (
-      SELECT
-        battle_id,
-        MAX(CASE WHEN is_user = 1 THEN side END)        AS user_side,
-        MAX(CASE WHEN is_user = 1 THEN player_name END) AS user_name,
-        MAX(CASE WHEN side = 'p1' THEN player_name END) AS p1_name,
-        MAX(CASE WHEN side = 'p2' THEN player_name END) AS p2_name
-      FROM battle_sides
-      GROUP BY battle_id
-    ),
-    links AS (
-      SELECT
-        btl.battle_id,
-        MAX(tv.team_id) AS team_id
-      FROM battle_team_links btl
-      JOIN team_versions tv ON tv.id = btl.team_version_id
-      GROUP BY btl.battle_id
-    )
-    SELECT
-      b.id,
-      b.played_at,
-      b.format_id,
-      b.format_name,
-      b.is_rated,
-      b.winner_side,
-      b.game_type,
-
-      s.user_side,
-      s.user_name,
-      s.p1_name,
-      s.p2_name,
-
-      l.team_id AS team_id, 
-
-      CASE
-        WHEN s.user_side = 'p1' THEN s.p2_name
-        WHEN s.user_side = 'p2' THEN s.p1_name
-        ELSE COALESCE(s.p2_name, s.p1_name)
-      END AS opponent_name,
-
-      CASE
-        WHEN s.user_side IS NULL THEN NULL
-        WHEN b.winner_side IS NULL THEN NULL
-        WHEN b.winner_side = s.user_side THEN 'win'
-        ELSE 'loss'
-      END AS result
-
-    FROM battles b
-    LEFT JOIN sides s ON s.battle_id = b.id
-    LEFT JOIN links l ON l.battle_id = b.id
-    ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
-    LIMIT ? OFFSET ?;
-  `);
-  const base = baseStmt.all(limit, offset);
-  if (base.length === 0) return [];
-  const byBattle = /* @__PURE__ */ new Map();
-  for (let i = 0; i < base.length; i += MAX_IDS_PER_CHUNK) {
-    const chunk = base.slice(i, i + MAX_IDS_PER_CHUNK);
-    const ids = chunk.map((r) => r.id);
-    const placeholders = ids.map(() => "?").join(",");
-    const evStmt = db2.prepare(`
-      SELECT battle_id, event_index, line_type, raw_line
-      FROM battle_events
-      WHERE battle_id IN (${placeholders})
-        AND line_type IN ('teamsize','switch','drag','replace')
-      ORDER BY battle_id ASC, event_index ASC;
-    `);
-    const evRows = evStmt.all(...ids);
-    for (const e of evRows) {
-      const arr = byBattle.get(e.battle_id);
-      if (arr) arr.push(e);
-      else byBattle.set(e.battle_id, [e]);
-    }
-  }
-  return base.map((row) => {
-    const events = byBattle.get(row.id) ?? [];
-    const d = deriveForBattle(events, row.game_type ?? null);
-    const userSide = row.user_side;
-    const userSeen = userSide === "p1" ? d.p1_seen : userSide === "p2" ? d.p2_seen : [];
-    const user_brought_json = userSide && userSeen.length > 0 ? JSON.stringify(userSeen) : null;
-    const user_brought_seen = userSide ? userSeen.length || null : null;
-    const user_brought_expected = userSide === "p1" ? d.p1_expected : userSide === "p2" ? d.p2_expected : null;
-    return {
-      ...row,
-      user_brought_json,
-      user_brought_seen,
-      user_brought_expected
-      // optional: keep these if your UI still displays Opp counts
-      // opponent_brought_seen: null,
-      // opponent_brought_expected: null,
+function BattleLinkService(db2, deps) {
+  const { battleRepo: battleRepo2, teamsRepo: teamsRepo2 } = deps;
+  function autoLinkBattleForUserSide(args) {
+    const { battleId, debug } = args;
+    const NOT_LINKED = {
+      linked: false,
+      teamVersionId: null,
+      confidence: null,
+      method: null
     };
-  });
-}
-function getBattleDetails(battleId) {
-  const db2 = getDb();
-  const battle = db2.prepare(`
-    SELECT id, replay_url, replay_id, format_id, format_name, played_at, is_rated, winner_side
-    FROM battles
-    WHERE id = ?
-  `).get(battleId);
-  const sides = db2.prepare(`
-    SELECT side, is_user, player_name, avatar, rating
-    FROM battle_sides
-    WHERE battle_id = ?
-    ORDER BY side ASC
-  `).all(battleId);
-  const preview = db2.prepare(`
-    SELECT side, slot_index, species_name
-    FROM battle_preview_pokemon
-    WHERE battle_id = ?
-    ORDER BY side ASC, slot_index ASC
-  `).all(battleId);
-  const revealedRaw = db2.prepare(`
-    SELECT side, species_name, nickname, item_name, ability_name, tera_type, moves_json
-    FROM battle_revealed_sets
-    WHERE battle_id = ?
-    ORDER BY side ASC, species_name ASC
-  `).all(battleId);
-  const events = db2.prepare(`
-    SELECT event_index, turn_num, line_type, raw_line
-    FROM battle_events
-    WHERE battle_id = ?
-    ORDER BY event_index ASC
-  `).all(battleId);
-  const revealed = revealedRaw.map((r) => ({
-    side: r.side,
-    species_name: r.species_name,
-    nickname: r.nickname,
-    item_name: r.item_name,
-    ability_name: r.ability_name,
-    tera_type: r.tera_type,
-    moves: safeJsonArray(r.moves_json)
-  }));
-  return { battle, sides, preview, revealed, events };
-}
-function safeJsonArray(s) {
-  try {
-    const v = JSON.parse(s);
-    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
-  } catch {
-    return [];
+    const userSide = battleRepo2.getUserSide(battleId);
+    if (!userSide) return NOT_LINKED;
+    const speciesList = selectBattleSpeciesForUser(db2, battleId);
+    if (speciesList.species.length === 0) return NOT_LINKED;
+    const candidates = teamsRepo2.listLatestTeamVersions({
+      formatKeyHint: args.formatKeyHint ?? null,
+      limit: args.limitTeams ?? 200
+    });
+    let best = null;
+    for (const tv of candidates) {
+      const r = tryLinkBattleToTeamVersion(
+        db2,
+        { teamsRepo: teamsRepo2 },
+        { battleId, teamVersionId: tv.team_version_id }
+      );
+      if (!r.linked) continue;
+      if (!best || r.confidence > best.confidence) {
+        best = {
+          teamVersionId: tv.team_version_id,
+          confidence: r.confidence,
+          method: r.method
+        };
+      }
+    }
+    if (!best) return NOT_LINKED;
+    battleRepo2.upsertLink({
+      battleId,
+      side: userSide,
+      teamVersionId: best.teamVersionId,
+      confidence: best.confidence,
+      method: best.method,
+      matchedBy: "auto"
+    });
+    if (debug) {
+      console.log("[battle link] linked", { battleId, ...best, userSide });
+    }
+    return {
+      linked: true,
+      teamVersionId: best.teamVersionId,
+      confidence: best.confidence,
+      method: best.method
+    };
   }
+  function backfillForTeamVersion(args) {
+    throw new Error("backfillForTeamVersion not implemented: call teams/linking/backfillLinksForTeamVersion.ts directly.");
+  }
+  return {
+    autoLinkBattleForUserSide,
+    backfillForTeamVersion
+  };
 }
 function normalizeShowdownName(name) {
   return name.trim().replace(/^☆+/, "").replace(/\s+/g, "").toLowerCase();
@@ -1374,54 +2220,64 @@ function updateSettings(args) {
   tx();
   return getSettings();
 }
-ipcMain.removeHandler("db:teams:importPokepaste");
-ipcMain.removeHandler("db:teams:list");
-ipcMain.removeHandler("db:battles:importReplays");
-ipcMain.removeHandler("db:settings:get");
-ipcMain.removeHandler("db:settings:update");
 function registerDbHandlers() {
-  ipcMain.handle("db:teams:importPokepaste", async (_evt, args) => {
-    const result = await importTeamFromPokepaste(args);
-    return {
-      team_id: result.team_id,
-      version_id: result.version_id,
-      version_num: result.version_num,
-      slots_inserted: result.slots_inserted
-    };
+  const db2 = getDb();
+  const teams = teamsRepo(db2);
+  const battles = battleRepo(db2);
+  const battleLink = BattleLinkService(db2, {
+    battleRepo: battles,
+    teamsRepo: teams
   });
-  ipcMain.handle("db:teams:list", async () => {
-    return listTeams();
+  const battleIngest = battleIngestService(db2, {
+    battleRepo: battles,
+    battleLinkService: battleLink
   });
-  ipcMain.handle("db:teams:delete", async (_evt, teamId) => {
-    return deleteTeam(teamId);
+  const teamActive = new TeamActiveService(teams);
+  const teamImport = teamImportService(db2, {
+    teamsRepo: teams
+    // This service triggers relinking of existing battles after import
+    // via post-commit linker in teams/linking (which uses battles matchers).
+    // If your TeamImportService already does it internally, nothing else needed here.
   });
-  ipcMain.handle("db:teams:getDetails", async (_evt, teamId) => {
-    return getTeamDetails(teamId);
-  });
-  ipcMain.handle("db:teams:setTeamActive", (_evt, teamId) => {
-    return setTeamActive(teamId);
-  });
-  ipcMain.handle("db:teams:getActiveSummary", () => {
-    return getActiveTeamSummary();
-  });
-  ipcMain.handle("db:teams:getActiveActivity", () => {
-    return getActiveTeamActivity();
-  });
-  ipcMain.handle("db:battles:importReplays", async (_evt, args) => {
-    return importBattlesFromReplaysText(args);
-  });
-  ipcMain.handle("battles:list", (_e, args) => {
-    return listBattles(args);
-  });
-  ipcMain.handle("db:settings:get", async () => {
-    return getSettings();
-  });
-  ipcMain.handle("db:settings:update", async (_evt, args) => {
-    return updateSettings(args);
+  ipcMain.handle("db:teams:list", async () => teams.listTeams());
+  ipcMain.handle("db:teams:getDetails", async (_evt, teamId) => teams.getTeamDetails(teamId));
+  ipcMain.handle("db:teams:getActiveSummary", async () => teams.getActiveTeamSummary());
+  ipcMain.handle("db:teams:getActiveActivity", async () => teams.getActiveTeamActivity());
+  ipcMain.handle("db:teams:setTeamActive", async (_evt, teamId) => teamActive.setActiveTeam(teamId));
+  ipcMain.handle("db:teams:delete", async (_evt, teamId) => teams.deleteTeam(teamId));
+  ipcMain.handle("db:teams:importPokepaste", async (_evt, args) => teamImport.importFromPokepaste(args));
+  ipcMain.handle("db:battles:list", async (_evt, args) => {
+    const limit = (args == null ? void 0 : args.limit) ?? 200;
+    const offset = (args == null ? void 0 : args.offset) ?? 0;
+    return battles.listBattles({ limit, offset });
   });
   ipcMain.handle("db:battles:getDetails", async (_evt, battleId) => {
-    return getBattleDetails(battleId);
+    var _a, _b;
+    const d = battles.getBattleDetails(battleId);
+    if (!d) return null;
+    return {
+      battle: {
+        ...d.battle,
+        // optional fields you might add later:
+        team_label: null,
+        team_version_label: null,
+        match_confidence: ((_a = d.userLink) == null ? void 0 : _a.match_confidence) ?? null,
+        match_method: ((_b = d.userLink) == null ? void 0 : _b.match_method) ?? null
+      },
+      sides: d.sides,
+      preview: d.preview,
+      revealed: d.revealed,
+      events: d.events
+    };
   });
+  ipcMain.handle("db:battles:importReplays", async (_evt, args) => {
+    return battleIngest.importFromReplaysText(args.text);
+  });
+  ipcMain.handle("db:battles:relinkBattle", async (_evt, battleId) => {
+    return battleLink.autoLinkBattleForUserSide({ battleId, formatKeyHint: null });
+  });
+  ipcMain.handle("db:settings:get", async () => getSettings());
+  ipcMain.handle("db:settings:update", async (_evt, patch) => updateSettings(patch));
 }
 const __filename$1 = fileURLToPath(import.meta.url);
 const __dirname$1 = dirname(__filename$1);
@@ -1434,9 +2290,9 @@ let win = null;
 function createWindow() {
   win = new BrowserWindow({
     width: 1380,
-    height: 910,
+    height: 920,
     minWidth: 1280,
-    minHeight: 910,
+    minHeight: 920,
     icon: path.join(process.env.VITE_PUBLIC, "electron-vite.svg"),
     webPreferences: {
       preload: path.join(__dirname$1, "preload.mjs"),
@@ -1453,27 +2309,40 @@ function createWindow() {
     win.loadFile(path.join(RENDERER_DIST, "index.html"));
   }
 }
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-    win = null;
-  }
-});
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
-});
-app.whenReady().then(async () => {
-  try {
-    await runMigrations();
-    registerDbHandlers();
-    createWindow();
-  } catch (err) {
-    console.error("[main] startup failed:", err);
-    app.quit();
-  }
-});
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    } else {
+      createWindow();
+    }
+  });
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") {
+      app.quit();
+      win = null;
+    }
+  });
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+  app.whenReady().then(async () => {
+    try {
+      await runMigrations();
+      registerDbHandlers();
+      createWindow();
+    } catch (err) {
+      console.error("[main] startup failed:", err);
+      app.quit();
+    }
+  });
+}
 export {
   MAIN_DIST,
   RENDERER_DIST,

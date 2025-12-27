@@ -86,7 +86,7 @@ export function BattlesPage({ initialSelectedId }: Props) {
 
   const [teams, setTeams] = useState<TeamListRow[]>([]);
   const [activeTeam, setActiveTeam] = useState<TeamListRow | null>(null);
-  const [teamFilter, setTeamFilter] = useState<TeamFilterValue>("active");
+  const [teamFilter, setTeamFilter] = useState<TeamFilterValue>("all");
 
 
   async function refreshList() {
@@ -99,6 +99,7 @@ export function BattlesPage({ initialSelectedId }: Props) {
       const uiRows = dbRows.map(toUiRow);
 
       setRows(uiRows);
+      console.log("[ui] total rows:", uiRows.length, "linked:", uiRows.filter(r => r.team_id).length);
       setSelectedId((prev) => prev || uiRows[0]?.id || "");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -202,12 +203,22 @@ export function BattlesPage({ initialSelectedId }: Props) {
       const ts = await TeamsApi.listTeams();
       setTeams(ts);
 
-      const activity = await TeamsApi.getActiveTeamActivity();
+      const activity = await TeamsApi.getActiveActivity();
       setActiveTeam(activity.activeTeam ?? null);
 
       if (!activity.activeTeam) setTeamFilter("all");
     })();
   }, []);
+
+  useEffect(() => {
+  if (!filtered.length) {
+    setSelectedId("");
+    return;
+  }
+  if (!selectedId || !filtered.some((b) => b.id === selectedId)) {
+    setSelectedId(filtered[0].id);
+  }
+}, [filtered, selectedId]);
 
   const stats = useMemo(() => {
     const total = rows.length;
