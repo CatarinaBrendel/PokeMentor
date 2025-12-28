@@ -20,6 +20,7 @@ import { BattleLinkService } from "../db/queries/battles/services/BattleLinkServ
 // Settings (unchanged)
 // -----------------------------
 import { getSettings, updateSettings } from "../db/queries/settings/settings";
+import { getEvTrainingRecipe } from "../ai/grok";
 
 /**
  * Centralized registration of DB-backed IPC handlers.
@@ -100,5 +101,20 @@ export function registerDbHandlers() {
 
   // Settings
   ipcMain.handle("db:settings:get", async () => getSettings());
-  ipcMain.handle("db:settings:update", async (_evt, patch: Record<string, string>) => updateSettings(patch));
+  ipcMain.handle(
+    "db:settings:update",
+    async (_evt, patch: Record<string, string | null>) => updateSettings(patch)
+  );
+
+  // AI
+  ipcMain.handle("ai:evs:recipe", async (_evt, args) => {
+    const settings = getSettings();
+    const apiKey = settings.grok_api_key;
+    if (!apiKey) {
+      throw new Error("Missing Grok API key. Configure it in Settings.");
+    }
+
+    const model = settings.grok_model ?? "grok-2-latest";
+    return getEvTrainingRecipe({ apiKey, model, request: args });
+  });
 }

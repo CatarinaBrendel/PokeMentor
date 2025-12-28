@@ -1,6 +1,7 @@
 import * as React from "react";
-import type { TeamDetails, TeamSlotWithSetRow } from "./teams.types"; // adjust path if needed
+import type { TeamDetails, TeamSlotWithSetRow } from "../model/teams.types";
 import TeamSpriteStrip from "../../pokemon/ui/TeamSpriteStrip";
+import EvTrainingModal from "./EvTrainingModal";
 
 type Props = {
   data: TeamDetails;
@@ -339,6 +340,7 @@ export default function TeamDetailsPanel({ data, onClose, onSetActive }: Props) 
     });
 
   const [copied, setCopied] = React.useState(false);
+  const [evModalOpen, setEvModalOpen] = React.useState(false);
 
   async function onExport() {
     const text = exportTeamAsPokepasteText(team.name ?? "Untitled team", slots);
@@ -435,6 +437,19 @@ export default function TeamDetailsPanel({ data, onClose, onSetActive }: Props) 
           >
             {copied ? "Copied" : "Export"}
           </button>
+
+          <button
+            type="button"
+            onClick={() => setEvModalOpen(true)}
+            disabled={slots.length === 0}
+            className={cx(
+              "rounded-lg bg-white px-2 py-1 text-xs text-dust-700 ring-1 ring-black/5 hover:bg-dust-50",
+              slots.length === 0 && "cursor-not-allowed opacity-50"
+            )}
+            title="Open EV training recipe"
+          >
+            EV recipe
+          </button>
         </div>
 
         <div className="mt-4 h-px bg-black/10" />
@@ -458,6 +473,12 @@ export default function TeamDetailsPanel({ data, onClose, onSetActive }: Props) 
           ))}
         </div>
       </div>
+
+      <EvTrainingModal
+        open={evModalOpen}
+        onClose={() => setEvModalOpen(false)}
+        slots={slots}
+      />
     </div>
   );
 }

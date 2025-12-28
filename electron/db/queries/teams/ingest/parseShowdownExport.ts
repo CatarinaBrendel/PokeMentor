@@ -42,17 +42,18 @@ export type ParsedPaste = {
 };
 
 const STAT_MAP: Record<string, StatKey> = {
-  HP: "hp",
-  Atk: "atk",
-  Def: "def",
-  SpA: "spa",
-  "Sp. Atk": "spa",
-  SpAtk: "spa",
-  SpD: "spd",
-  "Sp. Def": "spd",
-  SpDef: "spd",
-  Spe: "spe",
+  hp: "hp",
+  atk: "atk",
+  def: "def",
+  spa: "spa",
+  spatk: "spa",
+  spdef: "spd",
+  spd: "spd",
+  spe: "spe",
+  speed: "spe",
 };
+
+const SUPPORTED_KEYS = new Set(["ability", "level", "evs", "ivs", "tera type", "happiness", "shiny"]);
 
 function toFiniteInt(v: unknown): number | null {
   const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
@@ -70,10 +71,12 @@ function parseSpread(value: string) {
     const n = toFiniteInt(m[1]);
     if (n == null) continue;
 
-    const statRaw = m[2].trim().replace(/\s+/g, " ");
-    const key =
-      STAT_MAP[statRaw] ??
-      STAT_MAP[statRaw.replace(/\./g, "")]; // handle "Sp. Atk" vs "Sp Atk"
+    const statRaw = m[2].trim();
+    const keyToken = statRaw
+      .toLowerCase()
+      .replace(/\./g, "")
+      .replace(/\s+/g, "");
+    const key = STAT_MAP[keyToken];
 
     if (!key) continue;
     out[key] = n;
@@ -130,12 +133,6 @@ function statsFromSpread(sp: Partial<Record<StatKey, number>>): {
   };
 }
 
-function looksLikeEnglishKeyLine(line: string): boolean {
-  // Reject localized headers early if you want English-only.
-  // This is conservative; adjust if needed.
-  return /^(Ability|Level|EVs|IVs|Tera Type|Happiness|Shiny)\s*:/i.test(line);
-}
-
 export function parseShowdownExport(raw: string): ParsedPaste {
   const warnings: string[] = [];
   const text = (raw ?? "").replace(/\r\n/g, "\n").trim();
@@ -179,11 +176,11 @@ export function parseShowdownExport(raw: string): ParsedPaste {
       // Key: Value
       const kv = line.match(/^([^:]+):\s*(.+)$/);
       if (kv) {
-        const key = kv[1].trim().toLowerCase();
+        const key = kv[1].replace(/^\uFEFF/, "").trim().toLowerCase();
         const val = kv[2].trim();
 
         // Enforce English-only keys. If you prefer “best-effort” parsing, remove this guard.
-        if (!looksLikeEnglishKeyLine(line)) {
+        if (!SUPPORTED_KEYS.has(key)) {
           warnings.push(`Block ${bi + 1}: unsupported key "${kv[1].trim()}" (English-only).`);
           continue;
         }

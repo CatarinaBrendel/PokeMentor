@@ -1,6 +1,10 @@
 import { BattleDetailsDto } from "../../features/battles/model/battles.types";
-import { DeleteTeamResult } from "../features/model/teams.types";
-import { TeamListRow } from "../features/teams/TeamsView";
+import type {
+  ActiveTeamActivity,
+  DeleteTeamResult,
+  TeamDetails,
+} from "../../features/teams/model/teams.types";
+import type { TeamListRow } from "../../features/teams/ui/TeamsView";
 
 export {};
 
@@ -28,6 +32,21 @@ type ImportReplaysResult = {
   >;
 };
 
+type EvTrainingRequest = {
+  species_name: string;
+  nature: string | null;
+  evs: { hp: number; atk: number; def: number; spa: number; spd: number; spe: number };
+};
+
+type EvTrainingRecipe = {
+  stats: Array<{
+    stat: string;
+    items: Array<{ name: string; count: number }>;
+  }>;
+  assumptions: string[];
+  notes?: string[];
+};
+
 declare global {
   interface Window {
     __toast?: (message: string, type: "success" | "error") => void,
@@ -47,8 +66,23 @@ declare global {
         getDetails: (battleID: string) => Promise<BattleDetailsDto>
       };
       settings: {
-        get: () => Promise<{ showdown_username: string | null }>;
-        update: (args: { showdown_username?: string }) => Promise<{ showdown_username: string | null }>;
+        get: () => Promise<{
+          showdown_username: string | null;
+          grok_api_key: string | null;
+          grok_model: string | null;
+        }>;
+        update: (args: {
+          showdown_username?: string;
+          grok_api_key?: string;
+          grok_model?: string;
+        }) => Promise<{
+          showdown_username: string | null;
+          grok_api_key: string | null;
+          grok_model: string | null;
+        }>;
+      };
+      ai: {
+        getEvTrainingRecipe: (args: EvTrainingRequest) => Promise<EvTrainingRecipe>;
       };
     };
   }

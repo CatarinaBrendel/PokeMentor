@@ -110,6 +110,8 @@ export function getSettings(): SettingsSnapshot {
 
   return {
     showdown_username: map.get("showdown_username") ?? null,
+    grok_api_key: map.get("grok_api_key") ?? null,
+    grok_model: map.get("grok_model") ?? null,
   };
 }
 
@@ -136,6 +138,40 @@ export function updateSettings(args: UpdateSettingsArgs): SettingsSnapshot {
 
       // Backfill all existing battles (and reset if cleared)
       backfillIsUserForAllBattles(db, normalized);
+    }
+
+    if (typeof args.grok_api_key === "string") {
+      const key = args.grok_api_key.trim();
+      const normalized = key.length ? key : null;
+
+      if (normalized) {
+        db.prepare(`
+          INSERT INTO app_settings(key, value, updated_at)
+          VALUES ('grok_api_key', ?, strftime('%s','now'))
+          ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        `).run(normalized);
+      } else {
+        db.prepare(`DELETE FROM app_settings WHERE key = 'grok_api_key'`).run();
+      }
+    }
+
+    if (typeof args.grok_model === "string") {
+      const model = args.grok_model.trim();
+      const normalized = model.length ? model : null;
+
+      if (normalized) {
+        db.prepare(`
+          INSERT INTO app_settings(key, value, updated_at)
+          VALUES ('grok_model', ?, strftime('%s','now'))
+          ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        `).run(normalized);
+      } else {
+        db.prepare(`DELETE FROM app_settings WHERE key = 'grok_model'`).run();
+      }
     }
   });
 

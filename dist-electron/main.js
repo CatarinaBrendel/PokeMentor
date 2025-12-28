@@ -785,17 +785,17 @@ function postCommitTeamVersionLinking(db2, deps, args) {
   return res;
 }
 const STAT_MAP = {
-  HP: "hp",
-  Atk: "atk",
-  Def: "def",
-  SpA: "spa",
-  "Sp. Atk": "spa",
-  SpAtk: "spa",
-  SpD: "spd",
-  "Sp. Def": "spd",
-  SpDef: "spd",
-  Spe: "spe"
+  hp: "hp",
+  atk: "atk",
+  def: "def",
+  spa: "spa",
+  spatk: "spa",
+  spdef: "spd",
+  spd: "spd",
+  spe: "spe",
+  speed: "spe"
 };
+const SUPPORTED_KEYS = /* @__PURE__ */ new Set(["ability", "level", "evs", "ivs", "tera type", "happiness", "shiny"]);
 function toFiniteInt$1(v) {
   const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
   return Number.isFinite(n) ? Math.trunc(n) : null;
@@ -808,8 +808,9 @@ function parseSpread(value) {
     if (!m) continue;
     const n = toFiniteInt$1(m[1]);
     if (n == null) continue;
-    const statRaw = m[2].trim().replace(/\s+/g, " ");
-    const key = STAT_MAP[statRaw] ?? STAT_MAP[statRaw.replace(/\./g, "")];
+    const statRaw = m[2].trim();
+    const keyToken = statRaw.toLowerCase().replace(/\./g, "").replace(/\s+/g, "");
+    const key = STAT_MAP[keyToken];
     if (!key) continue;
     out[key] = n;
   }
@@ -846,9 +847,6 @@ function statsFromSpread(sp) {
     spe: sp.spe ?? null
   };
 }
-function looksLikeEnglishKeyLine(line) {
-  return /^(Ability|Level|EVs|IVs|Tera Type|Happiness|Shiny)\s*:/i.test(line);
-}
 function parseShowdownExport(raw) {
   const warnings = [];
   const text = (raw ?? "").replace(/\r\n/g, "\n").trim();
@@ -881,9 +879,9 @@ function parseShowdownExport(raw) {
       }
       const kv = line.match(/^([^:]+):\s*(.+)$/);
       if (kv) {
-        const key = kv[1].trim().toLowerCase();
+        const key = kv[1].replace(/^\uFEFF/, "").trim().toLowerCase();
         const val = kv[2].trim();
-        if (!looksLikeEnglishKeyLine(line)) {
+        if (!SUPPORTED_KEYS.has(key)) {
           warnings.push(`Block ${bi + 1}: unsupported key "${kv[1].trim()}" (English-only).`);
           continue;
         }
@@ -2194,7 +2192,9 @@ function getSettings() {
   const rows = db2.prepare(`SELECT key, value FROM app_settings`).all();
   const map = new Map(rows.map((r) => [r.key, r.value]));
   return {
-    showdown_username: map.get("showdown_username") ?? null
+    showdown_username: map.get("showdown_username") ?? null,
+    grok_api_key: map.get("grok_api_key") ?? null,
+    grok_model: map.get("grok_model") ?? null
   };
 }
 function updateSettings(args) {
@@ -2216,9 +2216,109 @@ function updateSettings(args) {
       }
       backfillIsUserForAllBattles(db2, normalized);
     }
+    if (typeof args.grok_api_key === "string") {
+      const key = args.grok_api_key.trim();
+      const normalized = key.length ? key : null;
+      if (normalized) {
+        db2.prepare(`
+          INSERT INTO app_settings(key, value, updated_at)
+          VALUES ('grok_api_key', ?, strftime('%s','now'))
+          ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        `).run(normalized);
+      } else {
+        db2.prepare(`DELETE FROM app_settings WHERE key = 'grok_api_key'`).run();
+      }
+    }
+    if (typeof args.grok_model === "string") {
+      const model = args.grok_model.trim();
+      const normalized = model.length ? model : null;
+      if (normalized) {
+        db2.prepare(`
+          INSERT INTO app_settings(key, value, updated_at)
+          VALUES ('grok_model', ?, strftime('%s','now'))
+          ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        `).run(normalized);
+      } else {
+        db2.prepare(`DELETE FROM app_settings WHERE key = 'grok_model'`).run();
+      }
+    }
   });
   tx();
   return getSettings();
+}
+const STAT_LABELS = [
+  { key: "hp", label: "HP" },
+  { key: "atk", label: "Atk" },
+  { key: "def", label: "Def" },
+  { key: "spa", label: "SpA" },
+  { key: "spd", label: "SpD" },
+  { key: "spe", label: "Spe" }
+];
+function targetLine(evs) {
+  const parts = [];
+  STAT_LABELS.forEach(({ key, label }) => {
+    const value = evs[key];
+    if (value > 0) parts.push(`${value} ${label}`);
+  });
+  return parts.length ? parts.join(" / ") : "No EVs recorded.";
+}
+async function getEvTrainingRecipe({
+  apiKey,
+  model,
+  request
+}) {
+  var _a, _b, _c;
+  const response = await fetch("https://api.x.ai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: "You are a Pokemon EV training assistant. Return JSON only with keys: stats (array of {stat, items}), assumptions (array of strings), notes (optional array). Use stat labels HP, Atk, Def, SpA, SpD, Spe. Items must only be vitamins (HP Up, Protein, Iron, Calcium, Zinc, Carbos) and feathers (Health Feather, Muscle Feather, Resist Feather, Genius Feather, Clever Feather, Swift Feather). Counts are whole numbers."
+        },
+        {
+          role: "user",
+          content: [
+            `Pokemon: ${request.species_name}`,
+            request.nature ? `Nature: ${request.nature}` : "Nature: unknown",
+            `Target EVs: ${targetLine(request.evs)}`,
+            "Assumptions: fresh Pokemon (0 EVs), vitamins give +10 EV each, feathers give +1 EV each, no PokeRus or Power Items.",
+            "Provide the most efficient mix of vitamins and feathers for each stat."
+          ].join("\n")
+        }
+      ]
+    })
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Grok request failed: ${response.status} ${text}`);
+  }
+  const data = await response.json();
+  const content = (_c = (_b = (_a = data == null ? void 0 : data.choices) == null ? void 0 : _a[0]) == null ? void 0 : _b.message) == null ? void 0 : _c.content;
+  if (!content) {
+    throw new Error("Grok response was empty.");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (e) {
+    throw new Error("Failed to parse Grok response as JSON.");
+  }
+  if (!Array.isArray(parsed.stats) || !Array.isArray(parsed.assumptions)) {
+    throw new Error("Grok response schema invalid.");
+  }
+  return parsed;
 }
 function registerDbHandlers() {
   const db2 = getDb();
@@ -2277,7 +2377,19 @@ function registerDbHandlers() {
     return battleLink.autoLinkBattleForUserSide({ battleId, formatKeyHint: null });
   });
   ipcMain.handle("db:settings:get", async () => getSettings());
-  ipcMain.handle("db:settings:update", async (_evt, patch) => updateSettings(patch));
+  ipcMain.handle(
+    "db:settings:update",
+    async (_evt, patch) => updateSettings(patch)
+  );
+  ipcMain.handle("ai:evs:recipe", async (_evt, args) => {
+    const settings = getSettings();
+    const apiKey = settings.grok_api_key;
+    if (!apiKey) {
+      throw new Error("Missing Grok API key. Configure it in Settings.");
+    }
+    const model = settings.grok_model ?? "grok-2-latest";
+    return getEvTrainingRecipe({ apiKey, model, request: args });
+  });
 }
 const __filename$1 = fileURLToPath(import.meta.url);
 const __dirname$1 = dirname(__filename$1);

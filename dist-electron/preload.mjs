@@ -36,5 +36,8 @@ electron.contextBridge.exposeInMainWorld("api", {
   settings: {
     get: () => electron.ipcRenderer.invoke("db:settings:get"),
     update: (args) => electron.ipcRenderer.invoke("db:settings:update", args)
+  },
+  ai: {
+    getEvTrainingRecipe: (args) => electron.ipcRenderer.invoke("ai:evs:recipe", args)
   }
 });

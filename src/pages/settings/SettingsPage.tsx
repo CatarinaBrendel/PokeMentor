@@ -1,4 +1,5 @@
 import { ShowdownUsernameCard } from "../../features/settings/ui/ShowdownUsernameCard";
+import { GrokApiCard } from "../../features/settings/ui/GrokApiCard";
 
 export function SettingsPage() {
   return (
@@ -11,6 +12,7 @@ export function SettingsPage() {
       </div>
 
       <ShowdownUsernameCard />
+      <GrokApiCard />
     </div>
   );
 }

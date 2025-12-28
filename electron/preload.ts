@@ -65,7 +65,18 @@ contextBridge.exposeInMainWorld("api", {
   settings: {
     get: () => ipcRenderer.invoke("db:settings:get"),
     
-    update: (args: { showdown_username?: string | null }) =>
+    update: (args: {
+      showdown_username?: string | null;
+      grok_api_key?: string | null;
+      grok_model?: string | null;
+    }) =>
       ipcRenderer.invoke("db:settings:update", args),
+  },
+  ai: {
+    getEvTrainingRecipe: (args: {
+      species_name: string;
+      nature: string | null;
+      evs: { hp: number; atk: number; def: number; spa: number; spd: number; spe: number };
+    }) => ipcRenderer.invoke("ai:evs:recipe", args),
   },
 });
