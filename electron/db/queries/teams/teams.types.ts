@@ -72,6 +72,14 @@ export type TeamVersionRow = {
   created_at: string;
 };
 
+export type TeamEvRecipeRow = {
+  team_version_id: string;
+  pokemon_set_id: string;
+  source: "local" | "ai";
+  recipe_json: string;
+  updated_at: string;
+};
+
 export type TeamSlotWithSetRow = {
   slot_index: number;
   pokemon_set_id: string;

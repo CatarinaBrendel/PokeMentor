@@ -15,11 +15,45 @@ export type ImportTeamArgs = {
   paste_text?: string;
 };
 
+export type ImportPreviewSet = {
+  nickname: string | null;
+  species_name: string;
+  item_name: string | null;
+  ability_name: string | null;
+  level: number | null;
+  gender: "M" | "F" | null;
+  shiny: 0 | 1;
+  tera_type: string | null;
+  happiness: number | null;
+  nature: string | null;
+  ev_hp: number | null; ev_atk: number | null; ev_def: number | null;
+  ev_spa: number | null; ev_spd: number | null; ev_spe: number | null;
+  iv_hp: number | null; iv_atk: number | null; iv_def: number | null;
+  iv_spa: number | null; iv_spd: number | null; iv_spe: number | null;
+  moves: string[];
+};
+
+export type ImportTeamPreview = {
+  source_url: string | null;
+  raw_text: string;
+  meta: { title: string | null; author: string | null; format: string | null };
+  warnings: string[];
+  sets: ImportPreviewSet[];
+};
+
 export type ImportTeamResult = {
   team_id: string;
   version_id: string;
   version_num: number;
   slots_inserted: number;
+};
+
+export type EvRecipeRow = {
+  team_version_id: string;
+  pokemon_set_id: string;
+  source: "local" | "ai";
+  recipe_json: string;
+  updated_at: string;
 };
 
 export type DeleteTeamResult = { ok: true}

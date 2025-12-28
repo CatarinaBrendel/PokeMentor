@@ -30,6 +30,7 @@ type SidebarProps = {
   onSelect?: (key: NavKey) => void;
 
   showdownUsername?: string | null;
+  aiConnected?: boolean;
   onOpenSettings?: () => void; // called when user clicks footer row/button
 };
 
@@ -54,8 +55,10 @@ export default function Sidebar({
   onToggle,
   onSelect,
   showdownUsername,
+  aiConnected = true,
   onOpenSettings,
 }: SidebarProps) {
+  const showDisconnected = !aiConnected;
   return (
     <aside
       className={cx(
@@ -67,9 +70,16 @@ export default function Sidebar({
       <div className={cx("flex h-full flex-col py-6", collapsed ? "px-2" : "px-4")}>
         {/* Top status row */}
         <div className="flex items-center justify-between gap-2">
-          <div className={cx("flex items-center gap-3 rounded-2xl px-2 py-2", collapsed && "justify-center")}>
-            <span className="h-3 w-3 rounded-full bg-[#7BE27B]" />
-            {!collapsed ? <span className="text-sm opacity-90">Connected</span> : null}
+          <div
+            className={cx("flex items-center gap-3 rounded-2xl px-2 py-2", collapsed && "justify-center")}
+            title={showDisconnected ? "No AI Connected" : undefined}
+          >
+            <span className={cx("h-3 w-3 rounded-full", showDisconnected ? "bg-red-400" : "bg-[#7BE27B]")} />
+            {!collapsed ? (
+              <span className="text-sm opacity-90">
+                {showDisconnected ? "Disconnected" : "Connected"}
+              </span>
+            ) : null}
           </div>
 
           <button

@@ -108,6 +108,7 @@ export default function DashboardRootPage() {
   const [page, setPage] = useState<NavKey>("dashboard");
   const [openTeamId, setOpenTeamId] = useState<string | null>(null);
   const [showdownUsername, setShowdownUsername] = useState<string | null>(null);
+  const [aiConnected, setAiConnected] = useState<boolean>(true);
 
   const pagesDef: Record<NavKey, React.ReactNode> = {
     dashboard: (
@@ -131,9 +132,12 @@ export default function DashboardRootPage() {
     try {
       const s = await SettingsApi.get();
       setShowdownUsername(s.showdown_username ?? null);
+      const hasKey = Boolean(s.openrouter_api_key && s.openrouter_api_key.trim());
+      setAiConnected(Boolean(s.ai_enabled ?? true) && hasKey);
     } catch {
       // optionally toast; but don't block shell rendering
       setShowdownUsername(null);
+      setAiConnected(false);
     }
   }
 
@@ -150,9 +154,14 @@ export default function DashboardRootPage() {
     (async () => {
       try {
         const s = await SettingsApi.get();
-        if (!cancelled) setShowdownUsername(s.showdown_username ?? null);
+        if (!cancelled) {
+          setShowdownUsername(s.showdown_username ?? null);
+          const hasKey = Boolean(s.openrouter_api_key && s.openrouter_api_key.trim());
+          setAiConnected(Boolean(s.ai_enabled ?? true) && hasKey);
+        }
       } catch {
         // optional: toast, but sidebar can just show placeholder
+        if (!cancelled) setAiConnected(false);
       }
     })();
     return () => {
@@ -169,6 +178,7 @@ export default function DashboardRootPage() {
       }}
       pages={pagesDef}
       showdownUsername={showdownUsername}
+      aiConnected={aiConnected}
       onOpenShowdownSettings={() => setPage("settings")}
     />
   );

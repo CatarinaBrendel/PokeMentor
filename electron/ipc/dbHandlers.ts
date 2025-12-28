@@ -20,7 +20,7 @@ import { BattleLinkService } from "../db/queries/battles/services/BattleLinkServ
 // Settings (unchanged)
 // -----------------------------
 import { getSettings, updateSettings } from "../db/queries/settings/settings";
-import { getEvTrainingRecipe } from "../ai/grok";
+import { getEvTrainingRecipe } from "../ai/openrouter";
 
 /**
  * Centralized registration of DB-backed IPC handlers.
@@ -65,6 +65,15 @@ export function registerDbHandlers() {
   ipcMain.handle("db:teams:setTeamActive", async (_evt, teamId: string) => teamActive.setActiveTeam(teamId));
   ipcMain.handle("db:teams:delete", async (_evt, teamId: string) => teams.deleteTeam(teamId));
   ipcMain.handle("db:teams:importPokepaste", async (_evt, args) => teamImport.importFromPokepaste(args));
+  ipcMain.handle("db:teams:previewPokepaste", async (_evt, args) => teamImport.previewFromPokepaste(args));
+  ipcMain.handle("db:teams:getEvRecipes", async (_evt, teamVersionId: string) =>
+    teams.listTeamEvRecipes(teamVersionId)
+  );
+  ipcMain.handle(
+    "db:teams:saveEvRecipe",
+    async (_evt, args: { team_version_id: string; pokemon_set_id: string; source: "local" | "ai"; recipe_json: string }) =>
+      teams.upsertTeamEvRecipe({ ...args, now: new Date().toISOString() })
+  );
 
   // Battles
   ipcMain.handle("db:battles:list", async (_evt, args) => {
@@ -109,12 +118,15 @@ export function registerDbHandlers() {
   // AI
   ipcMain.handle("ai:evs:recipe", async (_evt, args) => {
     const settings = getSettings();
-    const apiKey = settings.grok_api_key;
+    if (!settings.ai_enabled) {
+      throw new Error("AI assistant is disabled in Settings.");
+    }
+    const apiKey = settings.openrouter_api_key;
     if (!apiKey) {
-      throw new Error("Missing Grok API key. Configure it in Settings.");
+      throw new Error("Missing OpenRouter API key. Configure it in Settings.");
     }
 
-    const model = settings.grok_model ?? "grok-2-latest";
+    const model = settings.openrouter_model ?? "openrouter/auto";
     return getEvTrainingRecipe({ apiKey, model, request: args });
   });
 }

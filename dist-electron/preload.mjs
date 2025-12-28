@@ -21,6 +21,9 @@ electron.contextBridge.exposeInMainWorld("ipcRenderer", {
 electron.contextBridge.exposeInMainWorld("api", {
   teams: {
     importPokepaste: (args) => electron.ipcRenderer.invoke("db:teams:importPokepaste", args),
+    previewPokepaste: (args) => electron.ipcRenderer.invoke("db:teams:previewPokepaste", args),
+    getEvRecipes: (teamVersionId) => electron.ipcRenderer.invoke("db:teams:getEvRecipes", teamVersionId),
+    saveEvRecipe: (args) => electron.ipcRenderer.invoke("db:teams:saveEvRecipe", args),
     listTeams: () => electron.ipcRenderer.invoke("db:teams:list"),
     deleteTeam: (teamId) => electron.ipcRenderer.invoke("db:teams:delete", teamId),
     getDetails: (teamId) => electron.ipcRenderer.invoke("db:teams:getDetails", teamId),

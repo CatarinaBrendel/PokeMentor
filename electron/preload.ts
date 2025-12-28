@@ -33,8 +33,14 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
 // --------- High-level PokéMentor API ---------
 contextBridge.exposeInMainWorld("api", {
   teams: {
-    importPokepaste: (args: { url: string; name?: string; format_ps?: string }) =>
+    importPokepaste: (args: { url?: string; name?: string; format_ps?: string; paste_text?: string }) =>
       ipcRenderer.invoke("db:teams:importPokepaste", args),
+    previewPokepaste: (args: { url?: string; name?: string; format_ps?: string; paste_text?: string }) =>
+      ipcRenderer.invoke("db:teams:previewPokepaste", args),
+    getEvRecipes: (teamVersionId: string) =>
+      ipcRenderer.invoke("db:teams:getEvRecipes", teamVersionId),
+    saveEvRecipe: (args: { team_version_id: string; pokemon_set_id: string; source: "local" | "ai"; recipe_json: string }) =>
+      ipcRenderer.invoke("db:teams:saveEvRecipe", args),
 
     listTeams: () =>
       ipcRenderer.invoke("db:teams:list") as Promise<TeamListRow[]>,
@@ -67,8 +73,9 @@ contextBridge.exposeInMainWorld("api", {
     
     update: (args: {
       showdown_username?: string | null;
-      grok_api_key?: string | null;
-      grok_model?: string | null;
+      openrouter_api_key?: string | null;
+      openrouter_model?: string | null;
+      ai_enabled?: boolean | null;
     }) =>
       ipcRenderer.invoke("db:settings:update", args),
   },

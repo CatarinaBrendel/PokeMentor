@@ -240,6 +240,17 @@ function teamsRepo(db2) {
     INSERT INTO team_slots (team_version_id, slot_index, pokemon_set_id)
     VALUES (@team_version_id, @slot_index, @pokemon_set_id)
   `);
+  const upsertEvRecipeStmt = db2.prepare(`
+    INSERT INTO team_ev_recipes (
+      team_version_id, pokemon_set_id, source, recipe_json, created_at, updated_at
+    )
+    VALUES (
+      @team_version_id, @pokemon_set_id, @source, @recipe_json, @now, @now
+    )
+    ON CONFLICT(team_version_id, pokemon_set_id, source) DO UPDATE SET
+      recipe_json = excluded.recipe_json,
+      updated_at = excluded.updated_at
+  `);
   const listTeamsStmt = db2.prepare(`
     SELECT
       t.id,
@@ -308,6 +319,16 @@ function teamsRepo(db2) {
     JOIN pokemon_sets ps ON ps.id = ts.pokemon_set_id
     WHERE ts.team_version_id = ?
     ORDER BY ts.slot_index ASC
+  `);
+  const listEvRecipesByVersionStmt = db2.prepare(`
+    SELECT
+      team_version_id,
+      pokemon_set_id,
+      source,
+      recipe_json,
+      updated_at
+    FROM team_ev_recipes
+    WHERE team_version_id = ?
   `);
   const selectMoveByNameStmt = db2.prepare(`
     SELECT id
@@ -463,6 +484,9 @@ function teamsRepo(db2) {
     insertTeamSlot(args) {
       insertSlotStmt.run(args);
     },
+    upsertTeamEvRecipe(args) {
+      upsertEvRecipeStmt.run(args);
+    },
     deleteTeam(teamId) {
       unlinkTeamStmt.run(teamId);
       deleteTeamStmt.run(teamId);
@@ -505,6 +529,9 @@ function teamsRepo(db2) {
         moves: movesBySetId.get(s.pokemon_set_id) ?? []
       }));
       return { team, latestVersion, slots };
+    },
+    listTeamEvRecipes(teamVersionId) {
+      return listEvRecipesByVersionStmt.all(teamVersionId);
     },
     // Moves
     getOrCreateMoveId(name) {
@@ -1020,6 +1047,14 @@ function setHash(s) {
   ].join("\n");
   return sha256(blob);
 }
+const STAT_DEFS = [
+  { key: "ev_hp", label: "HP", vitamin: "HP Up", feather: "Health Feather" },
+  { key: "ev_atk", label: "Atk", vitamin: "Protein", feather: "Muscle Feather" },
+  { key: "ev_def", label: "Def", vitamin: "Iron", feather: "Resist Feather" },
+  { key: "ev_spa", label: "SpA", vitamin: "Calcium", feather: "Genius Feather" },
+  { key: "ev_spd", label: "SpD", vitamin: "Zinc", feather: "Clever Feather" },
+  { key: "ev_spe", label: "Spe", vitamin: "Carbos", feather: "Swift Feather" }
+];
 function mapSetToDb(s) {
   return {
     nickname: s.nickname ?? null,
@@ -1044,6 +1079,28 @@ function mapSetToDb(s) {
     iv_spa: s.iv_spa ?? null,
     iv_spd: s.iv_spd ?? null,
     iv_spe: s.iv_spe ?? null
+  };
+}
+function buildLocalRecipeFromSet(set) {
+  const stats = [];
+  STAT_DEFS.forEach((stat) => {
+    const value = set[stat.key] ?? 0;
+    if (!value) return;
+    const vitamins = Math.floor(value / 10);
+    const feathers = value - vitamins * 10;
+    const items = [];
+    if (vitamins > 0) items.push({ name: stat.vitamin, count: vitamins });
+    if (feathers > 0) items.push({ name: stat.feather, count: feathers });
+    stats.push({ stat: stat.label, items });
+  });
+  return {
+    stats,
+    assumptions: [
+      "Assumes fresh Pokemon (0 EVs).",
+      "Vitamins provide 10 EV each.",
+      "Feathers are used for +1 EV precision."
+    ],
+    source: "local"
   };
 }
 function decodeHtml(s) {
@@ -1114,6 +1171,7 @@ function teamImportService(db2, deps) {
       let source_url = null;
       if (paste) {
         rawText = paste;
+        source_url = (norm2 == null ? void 0 : norm2.viewUrl) ?? null;
       } else {
         const { viewUrl, rawUrl } = norm2;
         source_url = viewUrl;
@@ -1169,6 +1227,14 @@ function teamImportService(db2, deps) {
             }
           }
           repo.insertTeamSlot({ team_version_id: version_id, slot_index: slotIndex, pokemon_set_id });
+          const localRecipe = buildLocalRecipeFromSet(s);
+          repo.upsertTeamEvRecipe({
+            team_version_id: version_id,
+            pokemon_set_id,
+            source: "local",
+            recipe_json: JSON.stringify(localRecipe),
+            now: nowIso
+          });
           slotIndex += 1;
         }
         return { team_id, version_id, version_num, slots_inserted: Math.min(parsedSets.length, 6) };
@@ -1185,6 +1251,38 @@ function teamImportService(db2, deps) {
         }
       );
       return { ...result, linking };
+    },
+    async previewFromPokepaste(args) {
+      const paste = (args.paste_text ?? "").trim();
+      const norm2 = normalizePokepasteUrl(args.url);
+      if (!paste && !norm2) {
+        throw new Error("Provide either a Pokepaste URL or pasted Showdown export text.");
+      }
+      let rawText;
+      let meta = { title: null, author: null, format: null };
+      let source_url = null;
+      if (paste) {
+        rawText = paste;
+        source_url = (norm2 == null ? void 0 : norm2.viewUrl) ?? null;
+      } else {
+        const { viewUrl, rawUrl } = norm2;
+        source_url = viewUrl;
+        const [fetchedRaw, viewHtml] = await Promise.all([fetchText(rawUrl), fetchText(viewUrl)]);
+        rawText = fetchedRaw;
+        meta = parsePokepasteMetaFromHtml(viewHtml);
+      }
+      const canonicalSource = canonicalizeSourceText(rawText);
+      const parsed = parseShowdownExport(canonicalSource);
+      if (parsed.warnings.length) {
+        console.log("[team import preview] parse warnings", parsed.warnings);
+      }
+      return {
+        source_url,
+        raw_text: canonicalSource,
+        meta,
+        warnings: parsed.warnings,
+        sets: parsed.sets
+      };
     }
   };
 }
@@ -2191,10 +2289,13 @@ function getSettings() {
   const db2 = getDb();
   const rows = db2.prepare(`SELECT key, value FROM app_settings`).all();
   const map = new Map(rows.map((r) => [r.key, r.value]));
+  const aiEnabledRaw = map.get("ai_enabled");
+  const aiEnabled = aiEnabledRaw == null ? true : aiEnabledRaw === "1" || aiEnabledRaw.toLowerCase() === "true";
   return {
     showdown_username: map.get("showdown_username") ?? null,
-    grok_api_key: map.get("grok_api_key") ?? null,
-    grok_model: map.get("grok_model") ?? null
+    openrouter_api_key: map.get("openrouter_api_key") ?? null,
+    openrouter_model: map.get("openrouter_model") ?? null,
+    ai_enabled: aiEnabled
   };
 }
 function updateSettings(args) {
@@ -2216,35 +2317,45 @@ function updateSettings(args) {
       }
       backfillIsUserForAllBattles(db2, normalized);
     }
-    if (typeof args.grok_api_key === "string") {
-      const key = args.grok_api_key.trim();
+    if (typeof args.openrouter_api_key === "string") {
+      const key = args.openrouter_api_key.trim();
       const normalized = key.length ? key : null;
       if (normalized) {
         db2.prepare(`
           INSERT INTO app_settings(key, value, updated_at)
-          VALUES ('grok_api_key', ?, strftime('%s','now'))
+          VALUES ('openrouter_api_key', ?, strftime('%s','now'))
           ON CONFLICT(key) DO UPDATE SET
             value = excluded.value,
             updated_at = excluded.updated_at
         `).run(normalized);
       } else {
-        db2.prepare(`DELETE FROM app_settings WHERE key = 'grok_api_key'`).run();
+        db2.prepare(`DELETE FROM app_settings WHERE key = 'openrouter_api_key'`).run();
       }
     }
-    if (typeof args.grok_model === "string") {
-      const model = args.grok_model.trim();
+    if (typeof args.openrouter_model === "string") {
+      const model = args.openrouter_model.trim();
       const normalized = model.length ? model : null;
       if (normalized) {
         db2.prepare(`
           INSERT INTO app_settings(key, value, updated_at)
-          VALUES ('grok_model', ?, strftime('%s','now'))
+          VALUES ('openrouter_model', ?, strftime('%s','now'))
           ON CONFLICT(key) DO UPDATE SET
             value = excluded.value,
             updated_at = excluded.updated_at
         `).run(normalized);
       } else {
-        db2.prepare(`DELETE FROM app_settings WHERE key = 'grok_model'`).run();
+        db2.prepare(`DELETE FROM app_settings WHERE key = 'openrouter_model'`).run();
       }
+    }
+    if (typeof args.ai_enabled === "boolean") {
+      const value = args.ai_enabled ? "1" : "0";
+      db2.prepare(`
+        INSERT INTO app_settings(key, value, updated_at)
+        VALUES ('ai_enabled', ?, strftime('%s','now'))
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `).run(value);
     }
   });
   tx();
@@ -2266,21 +2377,54 @@ function targetLine(evs) {
   });
   return parts.length ? parts.join(" / ") : "No EVs recorded.";
 }
+function normalizeItems(raw) {
+  if (!Array.isArray(raw)) return [];
+  const parsed = raw.map((item) => {
+    if (typeof item === "string") {
+      const m = item.match(/^\s*(\d+)\s*x?\s*(.+?)\s*$/i);
+      if (!m) return null;
+      return { count: Number(m[1]), name: m[2].trim() };
+    }
+    if (item && typeof item === "object") {
+      const obj = item;
+      const name = [obj.name, obj.item, obj.label].find((v) => typeof v === "string");
+      const countRaw = [obj.count, obj.qty, obj.quantity].find((v) => typeof v === "number" || typeof v === "string");
+      const count = typeof countRaw === "number" ? countRaw : typeof countRaw === "string" ? Number(countRaw) : NaN;
+      if (!name || !Number.isFinite(count)) return null;
+      return { name: name.trim(), count: Math.trunc(count) };
+    }
+    return null;
+  }).filter(Boolean);
+  return parsed.filter((item) => item.name && item.count > 0);
+}
+function normalizeRecipe(raw) {
+  const stats = Array.isArray(raw.stats) ? raw.stats.map((stat) => {
+    const label = typeof (stat == null ? void 0 : stat.stat) === "string" ? stat.stat.trim() : "";
+    const items = normalizeItems(stat == null ? void 0 : stat.items);
+    return label ? { stat: label, items } : null;
+  }).filter(Boolean) : [];
+  const assumptions = Array.isArray(raw.assumptions) ? raw.assumptions.filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim()) : [];
+  const notes = Array.isArray(raw.notes) ? raw.notes.filter((s) => typeof s === "string" && s.trim()).map((s) => s.trim()) : void 0;
+  return { stats, assumptions, notes };
+}
 async function getEvTrainingRecipe({
   apiKey,
   model,
   request
 }) {
   var _a, _b, _c;
-  const response = await fetch("https://api.x.ai/v1/chat/completions", {
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://pokementor.local",
+      "X-Title": "PokeMentor"
     },
     body: JSON.stringify({
       model,
       temperature: 0.2,
+      max_tokens: 2e3,
       response_format: { type: "json_object" },
       messages: [
         {
@@ -2293,7 +2437,7 @@ async function getEvTrainingRecipe({
             `Pokemon: ${request.species_name}`,
             request.nature ? `Nature: ${request.nature}` : "Nature: unknown",
             `Target EVs: ${targetLine(request.evs)}`,
-            "Assumptions: fresh Pokemon (0 EVs), vitamins give +10 EV each, feathers give +1 EV each, no PokeRus or Power Items.",
+            "Assumptions: fresh Pokemon (0 EVs), vitamins give +10 EV each, feathers give +1 EV each.",
             "Provide the most efficient mix of vitamins and feathers for each stat."
           ].join("\n")
         }
@@ -2302,23 +2446,35 @@ async function getEvTrainingRecipe({
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Grok request failed: ${response.status} ${text}`);
+    throw new Error(`OpenRouter request failed: ${response.status} ${text}`);
   }
   const data = await response.json();
   const content = (_c = (_b = (_a = data == null ? void 0 : data.choices) == null ? void 0 : _a[0]) == null ? void 0 : _b.message) == null ? void 0 : _c.content;
   if (!content) {
-    throw new Error("Grok response was empty.");
+    throw new Error("OpenRouter response was empty.");
   }
   let parsed;
   try {
     parsed = JSON.parse(content);
   } catch (e) {
-    throw new Error("Failed to parse Grok response as JSON.");
+    const fenced = content.match(/```json\s*([\s\S]*?)\s*```/i);
+    const block = (fenced == null ? void 0 : fenced[1]) ?? content;
+    const start = block.indexOf("{");
+    const end = block.lastIndexOf("}");
+    if (start !== -1 && end !== -1 && end > start) {
+      try {
+        parsed = JSON.parse(block.slice(start, end + 1));
+      } catch (inner) {
+        throw new Error("Failed to parse OpenRouter response as JSON.");
+      }
+    } else {
+      throw new Error("Failed to parse OpenRouter response as JSON.");
+    }
   }
   if (!Array.isArray(parsed.stats) || !Array.isArray(parsed.assumptions)) {
-    throw new Error("Grok response schema invalid.");
+    throw new Error("OpenRouter response schema invalid.");
   }
-  return parsed;
+  return normalizeRecipe(parsed);
 }
 function registerDbHandlers() {
   const db2 = getDb();
@@ -2346,6 +2502,15 @@ function registerDbHandlers() {
   ipcMain.handle("db:teams:setTeamActive", async (_evt, teamId) => teamActive.setActiveTeam(teamId));
   ipcMain.handle("db:teams:delete", async (_evt, teamId) => teams.deleteTeam(teamId));
   ipcMain.handle("db:teams:importPokepaste", async (_evt, args) => teamImport.importFromPokepaste(args));
+  ipcMain.handle("db:teams:previewPokepaste", async (_evt, args) => teamImport.previewFromPokepaste(args));
+  ipcMain.handle(
+    "db:teams:getEvRecipes",
+    async (_evt, teamVersionId) => teams.listTeamEvRecipes(teamVersionId)
+  );
+  ipcMain.handle(
+    "db:teams:saveEvRecipe",
+    async (_evt, args) => teams.upsertTeamEvRecipe({ ...args, now: (/* @__PURE__ */ new Date()).toISOString() })
+  );
   ipcMain.handle("db:battles:list", async (_evt, args) => {
     const limit = (args == null ? void 0 : args.limit) ?? 200;
     const offset = (args == null ? void 0 : args.offset) ?? 0;
@@ -2383,11 +2548,14 @@ function registerDbHandlers() {
   );
   ipcMain.handle("ai:evs:recipe", async (_evt, args) => {
     const settings = getSettings();
-    const apiKey = settings.grok_api_key;
-    if (!apiKey) {
-      throw new Error("Missing Grok API key. Configure it in Settings.");
+    if (!settings.ai_enabled) {
+      throw new Error("AI assistant is disabled in Settings.");
     }
-    const model = settings.grok_model ?? "grok-2-latest";
+    const apiKey = settings.openrouter_api_key;
+    if (!apiKey) {
+      throw new Error("Missing OpenRouter API key. Configure it in Settings.");
+    }
+    const model = settings.openrouter_model ?? "openrouter/auto";
     return getEvTrainingRecipe({ apiKey, model, request: args });
   });
 }

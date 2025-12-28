@@ -478,6 +478,7 @@ export default function TeamDetailsPanel({ data, onClose, onSetActive }: Props) 
         open={evModalOpen}
         onClose={() => setEvModalOpen(false)}
         slots={slots}
+        teamVersionId={data.latestVersion?.id ?? null}
       />
     </div>
   );

@@ -1,13 +1,19 @@
-export type AppSettingKey = "showdown_username" | "grok_api_key" | "grok_model";
+export type AppSettingKey =
+  | "showdown_username"
+  | "openrouter_api_key"
+  | "openrouter_model"
+  | "ai_enabled";
 
 export type SettingsSnapshot = {
   showdown_username: string | null;
-  grok_api_key: string | null;
-  grok_model: string | null;
+  openrouter_api_key: string | null;
+  openrouter_model: string | null;
+  ai_enabled: boolean;
 };
 
 export type UpdateSettingsArgs = Partial<{
   showdown_username?: string | null;
-  grok_api_key?: string | null;
-  grok_model?: string | null;
+  openrouter_api_key?: string | null;
+  openrouter_model?: string | null;
+  ai_enabled?: boolean | null;
 }>;

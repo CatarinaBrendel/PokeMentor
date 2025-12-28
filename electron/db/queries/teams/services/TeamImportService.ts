@@ -16,6 +16,42 @@ type PokepasteMeta = {
   format: string | null;
 };
 
+type RecipeItem = {
+  name: string;
+  count: number;
+};
+
+type StatRecipe = {
+  stat: string;
+  items: RecipeItem[];
+};
+
+type EvRecipe = {
+  stats: StatRecipe[];
+  assumptions: string[];
+  notes?: string[];
+  source: "local" | "ai";
+};
+
+type StatDef = {
+  key: keyof Pick<
+    ParsedSet,
+    "ev_hp" | "ev_atk" | "ev_def" | "ev_spa" | "ev_spd" | "ev_spe"
+  >;
+  label: string;
+  vitamin: string;
+  feather: string;
+};
+
+const STAT_DEFS: StatDef[] = [
+  { key: "ev_hp", label: "HP", vitamin: "HP Up", feather: "Health Feather" },
+  { key: "ev_atk", label: "Atk", vitamin: "Protein", feather: "Muscle Feather" },
+  { key: "ev_def", label: "Def", vitamin: "Iron", feather: "Resist Feather" },
+  { key: "ev_spa", label: "SpA", vitamin: "Calcium", feather: "Genius Feather" },
+  { key: "ev_spd", label: "SpD", vitamin: "Zinc", feather: "Clever Feather" },
+  { key: "ev_spe", label: "Spe", vitamin: "Carbos", feather: "Swift Feather" },
+];
+
 export type ImportArgs = { 
   url?: string; 
   paste_text?: string;
@@ -28,6 +64,14 @@ export type ImportTeamResult = {
   version_num: number;
   slots_inserted: number;
   linking?: { scanned: number; linked: number };
+};
+
+export type ImportPreviewResult = {
+  source_url: string | null;
+  raw_text: string;
+  meta: PokepasteMeta;
+  warnings: string[];
+  sets: ParsedSet[];
 };
 
 function mapSetToDb(s: ParsedSet) {
@@ -56,6 +100,34 @@ function mapSetToDb(s: ParsedSet) {
     iv_spa: s.iv_spa ?? null,
     iv_spd: s.iv_spd ?? null,
     iv_spe: s.iv_spe ?? null,
+  };
+}
+
+function buildLocalRecipeFromSet(set: ParsedSet): EvRecipe {
+  const stats: StatRecipe[] = [];
+
+  STAT_DEFS.forEach((stat) => {
+    const value = set[stat.key] ?? 0;
+    if (!value) return;
+
+    const vitamins = Math.floor(value / 10);
+    const feathers = value - vitamins * 10;
+    const items: RecipeItem[] = [];
+
+    if (vitamins > 0) items.push({ name: stat.vitamin, count: vitamins });
+    if (feathers > 0) items.push({ name: stat.feather, count: feathers });
+
+    stats.push({ stat: stat.label, items });
+  });
+
+  return {
+    stats,
+    assumptions: [
+      "Assumes fresh Pokemon (0 EVs).",
+      "Vitamins provide 10 EV each.",
+      "Feathers are used for +1 EV precision.",
+    ],
+    source: "local",
   };
 }
 
@@ -151,6 +223,7 @@ export function teamImportService(
       if (paste) {
         // Paste mode: no URL fetch, no HTML meta
         rawText = paste;
+        source_url = norm?.viewUrl ?? null;
       } else {
         // URL mode
         const { viewUrl, rawUrl } = norm!;
@@ -218,6 +291,14 @@ export function teamImportService(
           }
 
           repo.insertTeamSlot({ team_version_id: version_id, slot_index: slotIndex, pokemon_set_id });
+          const localRecipe = buildLocalRecipeFromSet(s);
+          repo.upsertTeamEvRecipe({
+            team_version_id: version_id,
+            pokemon_set_id,
+            source: "local",
+            recipe_json: JSON.stringify(localRecipe),
+            now: nowIso,
+          });
           slotIndex += 1;
         }
 
@@ -236,6 +317,46 @@ export function teamImportService(
       });
 
       return { ...result, linking };
+    },
+
+    async previewFromPokepaste(args: ImportArgs): Promise<ImportPreviewResult> {
+      const paste = (args.paste_text ?? "").trim();
+      const norm = normalizePokepasteUrl(args.url);
+
+      if (!paste && !norm) {
+        throw new Error("Provide either a Pokepaste URL or pasted Showdown export text.");
+      }
+
+      let rawText: string;
+      let meta: PokepasteMeta = { title: null, author: null, format: null };
+      let source_url: string | null = null;
+
+      if (paste) {
+        rawText = paste;
+        source_url = norm?.viewUrl ?? null;
+      } else {
+        const { viewUrl, rawUrl } = norm!;
+        source_url = viewUrl;
+
+        const [fetchedRaw, viewHtml] = await Promise.all([fetchText(rawUrl), fetchText(viewUrl)]);
+        rawText = fetchedRaw;
+        meta = parsePokepasteMetaFromHtml(viewHtml);
+      }
+
+      const canonicalSource = canonicalizeSourceText(rawText);
+      const parsed = parseShowdownExport(canonicalSource);
+
+      if (parsed.warnings.length) {
+        console.log("[team import preview] parse warnings", parsed.warnings);
+      }
+
+      return {
+        source_url,
+        raw_text: canonicalSource,
+        meta,
+        warnings: parsed.warnings,
+        sets: parsed.sets,
+      };
     },
   };
 }

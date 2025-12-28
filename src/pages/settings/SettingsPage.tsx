@@ -1,5 +1,5 @@
 import { ShowdownUsernameCard } from "../../features/settings/ui/ShowdownUsernameCard";
-import { GrokApiCard } from "../../features/settings/ui/GrokApiCard";
+import { OpenRouterApiCard } from "../../features/settings/ui/OpenRouterApiCard";
 
 export function SettingsPage() {
   return (
@@ -12,7 +12,7 @@ export function SettingsPage() {
       </div>
 
       <ShowdownUsernameCard />
-      <GrokApiCard />
+      <OpenRouterApiCard />
     </div>
   );
 }

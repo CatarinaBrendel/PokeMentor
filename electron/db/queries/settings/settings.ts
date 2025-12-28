@@ -107,11 +107,15 @@ export function getSettings(): SettingsSnapshot {
     .all() as Array<{ key: string; value: string }>;
 
   const map = new Map(rows.map(r => [r.key, r.value]));
+  const aiEnabledRaw = map.get("ai_enabled");
+  const aiEnabled =
+    aiEnabledRaw == null ? true : aiEnabledRaw === "1" || aiEnabledRaw.toLowerCase() === "true";
 
   return {
     showdown_username: map.get("showdown_username") ?? null,
-    grok_api_key: map.get("grok_api_key") ?? null,
-    grok_model: map.get("grok_model") ?? null,
+    openrouter_api_key: map.get("openrouter_api_key") ?? null,
+    openrouter_model: map.get("openrouter_model") ?? null,
+    ai_enabled: aiEnabled,
   };
 }
 
@@ -140,38 +144,49 @@ export function updateSettings(args: UpdateSettingsArgs): SettingsSnapshot {
       backfillIsUserForAllBattles(db, normalized);
     }
 
-    if (typeof args.grok_api_key === "string") {
-      const key = args.grok_api_key.trim();
+    if (typeof args.openrouter_api_key === "string") {
+      const key = args.openrouter_api_key.trim();
       const normalized = key.length ? key : null;
 
       if (normalized) {
         db.prepare(`
           INSERT INTO app_settings(key, value, updated_at)
-          VALUES ('grok_api_key', ?, strftime('%s','now'))
+          VALUES ('openrouter_api_key', ?, strftime('%s','now'))
           ON CONFLICT(key) DO UPDATE SET
             value = excluded.value,
             updated_at = excluded.updated_at
         `).run(normalized);
       } else {
-        db.prepare(`DELETE FROM app_settings WHERE key = 'grok_api_key'`).run();
+        db.prepare(`DELETE FROM app_settings WHERE key = 'openrouter_api_key'`).run();
       }
     }
 
-    if (typeof args.grok_model === "string") {
-      const model = args.grok_model.trim();
+    if (typeof args.openrouter_model === "string") {
+      const model = args.openrouter_model.trim();
       const normalized = model.length ? model : null;
 
       if (normalized) {
         db.prepare(`
           INSERT INTO app_settings(key, value, updated_at)
-          VALUES ('grok_model', ?, strftime('%s','now'))
+          VALUES ('openrouter_model', ?, strftime('%s','now'))
           ON CONFLICT(key) DO UPDATE SET
             value = excluded.value,
             updated_at = excluded.updated_at
         `).run(normalized);
       } else {
-        db.prepare(`DELETE FROM app_settings WHERE key = 'grok_model'`).run();
+        db.prepare(`DELETE FROM app_settings WHERE key = 'openrouter_model'`).run();
       }
+    }
+
+    if (typeof args.ai_enabled === "boolean") {
+      const value = args.ai_enabled ? "1" : "0";
+      db.prepare(`
+        INSERT INTO app_settings(key, value, updated_at)
+        VALUES ('ai_enabled', ?, strftime('%s','now'))
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+      `).run(value);
     }
   });
 

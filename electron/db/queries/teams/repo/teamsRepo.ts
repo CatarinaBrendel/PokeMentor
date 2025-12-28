@@ -87,6 +87,18 @@ export function teamsRepo(db: BetterSqlite3.Database) {
     VALUES (@team_version_id, @slot_index, @pokemon_set_id)
   `);
 
+  const upsertEvRecipeStmt = db.prepare(`
+    INSERT INTO team_ev_recipes (
+      team_version_id, pokemon_set_id, source, recipe_json, created_at, updated_at
+    )
+    VALUES (
+      @team_version_id, @pokemon_set_id, @source, @recipe_json, @now, @now
+    )
+    ON CONFLICT(team_version_id, pokemon_set_id, source) DO UPDATE SET
+      recipe_json = excluded.recipe_json,
+      updated_at = excluded.updated_at
+  `);
+
   // ---------------------------------------------------------------------------
   // Lists / Reads
   // ---------------------------------------------------------------------------
@@ -162,6 +174,17 @@ export function teamsRepo(db: BetterSqlite3.Database) {
     JOIN pokemon_sets ps ON ps.id = ts.pokemon_set_id
     WHERE ts.team_version_id = ?
     ORDER BY ts.slot_index ASC
+  `);
+
+  const listEvRecipesByVersionStmt = db.prepare(`
+    SELECT
+      team_version_id,
+      pokemon_set_id,
+      source,
+      recipe_json,
+      updated_at
+    FROM team_ev_recipes
+    WHERE team_version_id = ?
   `);
 
   // ---------------------------------------------------------------------------
@@ -353,6 +376,16 @@ export function teamsRepo(db: BetterSqlite3.Database) {
       insertSlotStmt.run(args);
     },
 
+    upsertTeamEvRecipe(args: {
+      team_version_id: string;
+      pokemon_set_id: string;
+      source: "local" | "ai";
+      recipe_json: string;
+      now: string;
+    }) {
+      upsertEvRecipeStmt.run(args);
+    },
+
     deleteTeam(teamId: string) {
       unlinkTeamStmt.run(teamId);
       deleteTeamStmt.run(teamId);
@@ -413,6 +446,10 @@ export function teamsRepo(db: BetterSqlite3.Database) {
       }));
 
       return { team, latestVersion, slots } satisfies TeamDetails;
+    },
+
+    listTeamEvRecipes(teamVersionId: string) {
+      return listEvRecipesByVersionStmt.all(teamVersionId) as import("../teams.types").TeamEvRecipeRow[];
     },
 
     // Moves

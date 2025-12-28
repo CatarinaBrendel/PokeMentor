@@ -18,6 +18,7 @@ type Props = {
   activePage?: NavKey;
   onNavigate?: (page: NavKey) => void;
   showdownUsername?: string | null;
+  aiConnected?: boolean;
   onOpenShowdownSettings?: () => void;
 };
 
@@ -34,7 +35,14 @@ function isNavKey(v: unknown): v is NavKey {
   );
 }
 
-export function DashboardShell({ pages, activePage, onNavigate, showdownUsername, onOpenShowdownSettings }: Props) {
+export function DashboardShell({
+  pages,
+  activePage,
+  onNavigate,
+  showdownUsername,
+  aiConnected,
+  onOpenShowdownSettings,
+}: Props) {
   const [collapsed, setCollapsed] = usePersistedState<boolean>(
     "pm.sidebar.collapsed",
     false
@@ -73,6 +81,7 @@ export function DashboardShell({ pages, activePage, onNavigate, showdownUsername
           onToggle={() => setCollapsed((v) => !v)}
           onSelect={setActive}
           showdownUsername={showdownUsername}
+          aiConnected={aiConnected}
           onOpenSettings={openSettings}
         />
         <main className="flex-1 min-w-0 overflow-auto">{pages[activeSafe]}</main>
