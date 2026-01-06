@@ -14,6 +14,7 @@ import { SettingsPage } from "../pages/settings/SettingsPage";
 import { SettingsApi } from "../features/settings/api/settings.api";
 import { DashboardApi } from "../features/dashboard/api/dashboard.api";
 import type { DashboardKpis } from "../features/dashboard/model/dashboard.types";
+import PracticeScenariosPage from "../pages/practice/PracticeScenariosPage";
 
 function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void }) {
   const [activeLeak, setActiveLeak] = useState<string | null>(null);
@@ -135,7 +136,7 @@ export default function DashboardRootPage() {
     live: <div className="p-8">Live Coaching (todo)</div>,
     reviews: <BattlesPage />,
     paths: <div className="p-8">Learning Paths (todo)</div>,
-    practice: <div className="p-8">Practice Scenarios (todo)</div>,
+    practice: <PracticeScenariosPage />,
     pokedex: <div className="p-8">Pokedex (todo)</div>,
     settings: <SettingsPage />,
   };
