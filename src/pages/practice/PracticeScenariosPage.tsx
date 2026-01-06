@@ -20,6 +20,11 @@ export default function PracticeScenariosPage() {
   const [formatFilter, setFormatFilter] = useState<string>("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedAction, setSelectedAction] = useState<
+    | { kind: "move"; moveName: string }
+    | { kind: "switch"; speciesName: string }
+    | null
+  >(null);
 
   // Mock data for now (replace with real data from DB later)
   const mine: PracticeScenarioListItem[] = useMemo(
@@ -237,6 +242,25 @@ export default function PracticeScenariosPage() {
     if (filteredItems.length > 0) setSelectedId(filteredItems[0].id);
   }
 
+  function handleSelectMove(moveName: string) {
+    setSelectedAction({ kind: "move", moveName });
+  }
+
+  function handleRunOutcome() {
+    // MVP: no sim yet. Keep it visible that something would happen.
+    // You can replace this with IPC later.
+    if (!selectedAction) return;
+    console.log("Run outcome with action:", selectedAction);
+  }
+
+  function handleClearSelection() {
+    setSelectedAction(null);
+  }
+
+  function handleSelectSwitch(speciesName: string) {
+    setSelectedAction({ kind: "switch", speciesName });
+  }
+
   return (
     <div className="w-full p-6 h-full">
       <div className="flex flex-col gap-5">
@@ -284,12 +308,22 @@ export default function PracticeScenariosPage() {
                 title={tab === "mine" ? "My Scenarios" : "Recommended"}
                 items={filteredItems}
                 selectedId={selectedId}
-                onSelect={setSelectedId}
+                onSelect={(id) => {
+                  setSelectedId(id);
+                  setSelectedAction(null);
+                }}
               />
             </div>
 
             <div className="lg:col-span-7 h-full min-h-0">
-              <PracticeScenarioDetailsPanel details={selectedDetails} />
+              <PracticeScenarioDetailsPanel
+                details={selectedDetails}
+                selectedAction={selectedAction}
+                onSelectMove={handleSelectMove}
+                onSelectSwitch={handleSelectSwitch}
+                onRunOutcome={handleRunOutcome}
+                onClearSelection={handleClearSelection}
+              />
             </div>
           </div>
         </div>
