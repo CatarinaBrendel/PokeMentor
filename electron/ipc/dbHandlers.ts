@@ -86,15 +86,29 @@ export function registerDbHandlers() {
     const d = battles.getBattleDetails(battleId);
     if (!d) return null;
 
+    const set = battles.getBattleSetSummary(battleId);
+
     return {
       battle: {
         ...d.battle,
-        // optional fields you might add later:
         team_label: null,
         team_version_label: null,
         match_confidence: d.userLink?.match_confidence ?? null,
         match_method: d.userLink?.match_method ?? null,
       },
+      set: set
+        ? {
+            id: set.id,
+            game_number: set.game_number ?? null,
+            total_games: set.total_games ?? (set.games.length || null),
+            games: set.games.map((g) => ({
+              battle_id: g.battle_id,
+              replay_id: g.replay_id,
+              played_at: g.played_at,
+              game_number: g.game_number ?? 0, // frontend prefers number; see note below
+            })),
+          }
+        : null,
       sides: d.sides,
       preview: d.preview,
       revealed: d.revealed,

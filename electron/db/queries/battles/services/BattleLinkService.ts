@@ -46,7 +46,7 @@ export function BattleLinkService(db: BetterSqlite3.Database, deps: BattleLinkSe
     if (!userSide) return NOT_LINKED;
 
     // 2) Optional guard: if we have no user species, skip work.
-    const speciesList = selectBattleSpeciesForUser(db, battleId);
+    const speciesList = selectBattleSpeciesForUser(db, battleId, { minRevealedToTrust: 4 });
     if (speciesList.species.length === 0) return NOT_LINKED;
 
     // 3) Candidate team versions (latest versions is usually best).
@@ -62,7 +62,7 @@ export function BattleLinkService(db: BetterSqlite3.Database, deps: BattleLinkSe
       const r = tryLinkBattleToTeamVersion(
         db,
         { teamsRepo },
-        { battleId, teamVersionId: tv.team_version_id }
+        { battleId, teamVersionId: tv.team_version_id, battleSpecies: speciesList }
       );
 
       if (!r.linked) continue;

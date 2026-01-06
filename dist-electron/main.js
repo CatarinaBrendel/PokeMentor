@@ -1328,332 +1328,434 @@ function normalizeShowdownName$1(name) {
   const id = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, "");
   return id || trimmed.toLowerCase().replace(/\s+/g, "");
 }
+function clampInt(n, lo, hi) {
+  return Math.max(lo, Math.min(hi, n));
+}
+function normalizeFormatKey(format_id, format_name) {
+  const key = String(format_id ?? format_name ?? "").trim();
+  return key.length ? key : null;
+}
+function uniqPreserveOrder(xs) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const x of xs) {
+    const v = (x ?? "").trim();
+    if (!v) continue;
+    const k = v.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(v);
+  }
+  return out;
+}
+function inferWinnerSideFromNames(args) {
+  const { winnerName, p1Name, p2Name } = args;
+  if (!winnerName) return null;
+  const w = normalizeShowdownName$1(winnerName);
+  if (!w) return null;
+  const p1n = p1Name ? normalizeShowdownName$1(p1Name) : "";
+  const p2n = p2Name ? normalizeShowdownName$1(p2Name) : "";
+  if (p1n && w === p1n) return "p1";
+  if (p2n && w === p2n) return "p2";
+  return null;
+}
 function battleRepo(db2) {
-  const getUserSideStmt = db2.prepare(`
-    SELECT side
-    FROM battle_sides
-    WHERE battle_id = ? AND is_user = 1
-    LIMIT 1
-  `);
-  const getBattleMetaStmt = db2.prepare(`
-    SELECT format_id, format_name, game_type
-    FROM battles
-    WHERE id = ?
-    LIMIT 1
-  `);
-  const getRevealedSpeciesStmt = db2.prepare(`
-    SELECT DISTINCT TRIM(species_name) AS species_name
-    FROM battle_revealed_sets
-    WHERE battle_id = ? AND side = ?
-      AND TRIM(COALESCE(species_name,'')) <> ''
-    ORDER BY species_name ASC
-  `);
-  const getPreviewSpeciesStmt = db2.prepare(`
-    SELECT DISTINCT TRIM(species_name) AS species_name
-    FROM battle_preview_pokemon
-    WHERE battle_id = ? AND side = ?
-      AND TRIM(COALESCE(species_name,'')) <> ''
-    ORDER BY slot_index ASC
-  `);
-  const readExistingLinkStmt = db2.prepare(`
-    SELECT team_version_id, match_confidence, matched_by
-    FROM battle_team_links
-    WHERE battle_id = ? AND side = ?
-    LIMIT 1
-  `);
-  const upsertLinkStmt = db2.prepare(`
-    INSERT INTO battle_team_links (
-      battle_id, side, team_version_id,
-      match_confidence, match_method,
-      matched_at, matched_by
-    ) VALUES (
-      @battle_id, @side, @team_version_id,
-      @match_confidence, @match_method,
-      @matched_at, @matched_by
-    )
-    ON CONFLICT(battle_id, side) DO UPDATE SET
-      team_version_id = excluded.team_version_id,
-      match_confidence = excluded.match_confidence,
-      match_method = excluded.match_method,
-      matched_at = excluded.matched_at,
-      matched_by = excluded.matched_by
-  `);
-  const listCandidateBattleIdsByFormatStmt = db2.prepare(`
-    SELECT b.id
-    FROM battles b
-    WHERE COALESCE(b.format_id, b.format_name, '') LIKE ? || '%'
-      AND NOT EXISTS (
+  const stmt = {
+    getUserSide: db2.prepare(`
+      SELECT side
+      FROM battle_sides
+      WHERE battle_id = ? AND is_user = 1
+      LIMIT 1
+    `),
+    getBattleMeta: db2.prepare(`
+      SELECT format_id, format_name, game_type
+      FROM battles
+      WHERE id = ?
+      LIMIT 1
+    `),
+    getRevealedSpecies: db2.prepare(`
+      SELECT DISTINCT TRIM(species_name) AS species_name
+      FROM battle_revealed_sets
+      WHERE battle_id = ? AND side = ?
+        AND TRIM(COALESCE(species_name,'')) <> ''
+      ORDER BY species_name ASC
+    `),
+    getPreviewSpecies: db2.prepare(`
+      SELECT DISTINCT TRIM(species_name) AS species_name
+      FROM battle_preview_pokemon
+      WHERE battle_id = ? AND side = ?
+        AND TRIM(COALESCE(species_name,'')) <> ''
+      ORDER BY slot_index ASC
+    `),
+    readExistingLink: db2.prepare(`
+      SELECT team_version_id, match_confidence, matched_by
+      FROM battle_team_links
+      WHERE battle_id = ? AND side = ?
+      LIMIT 1
+    `),
+    listCandidateBattleIdsByFormat: db2.prepare(`
+      SELECT b.id
+      FROM battles b
+      WHERE COALESCE(b.format_id, b.format_name, '') LIKE ? || '%'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM battle_team_links l
+          JOIN battle_sides s
+            ON s.battle_id = l.battle_id
+           AND s.side = l.side
+           AND s.is_user = 1
+          WHERE l.battle_id = b.id
+            AND l.team_version_id IS NOT NULL
+        )
+      ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
+      LIMIT ?
+    `),
+    listCandidateBattleIdsAnyFormat: db2.prepare(`
+      SELECT b.id
+      FROM battles b
+      WHERE NOT EXISTS (
         SELECT 1
         FROM battle_team_links l
         JOIN battle_sides s
           ON s.battle_id = l.battle_id
-        AND s.side = l.side
-        AND s.is_user = 1
+         AND s.side = l.side
+         AND s.is_user = 1
         WHERE l.battle_id = b.id
           AND l.team_version_id IS NOT NULL
       )
-    ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
-    LIMIT ?
-  `);
-  const listCandidateBattleIdsAnyFormatStmt = db2.prepare(`
-    SELECT b.id
-    FROM battles b
-    WHERE NOT EXISTS (
-      SELECT 1
+      ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
+      LIMIT ?
+    `),
+    listBattleEvents: db2.prepare(`
+      SELECT event_index, turn_num, line_type, raw_line
+      FROM battle_events
+      WHERE battle_id = ?
+      ORDER BY event_index ASC
+    `),
+    previewCountsBySide: db2.prepare(`
+      SELECT side, COUNT(*) AS c
+      FROM battle_preview_pokemon
+      WHERE battle_id = ?
+      GROUP BY side
+    `),
+    revealedCountsBySide: db2.prepare(`
+      SELECT side, COUNT(*) AS c
+      FROM battle_revealed_sets
+      WHERE battle_id = ?
+      GROUP BY side
+    `),
+    listBattles: db2.prepare(`
+      SELECT
+        b.id,
+        b.replay_id,
+        b.format_id,
+        b.format_name,
+        b.game_type,
+        b.played_at,
+        b.upload_time,
+        b.created_at,
+        b.is_rated,
+        b.is_private,
+        b.winner_side,
+        b.winner_name,
+
+        us.side AS user_side,
+        us.player_name AS user_player_name,
+
+        os.player_name AS opponent_name,
+
+        CASE
+          WHEN us.side IS NULL OR b.winner_side IS NULL THEN NULL
+          WHEN b.winner_side = us.side THEN 'win'
+          ELSE 'loss'
+        END AS result,
+
+        l.team_version_id AS linked_team_version_id,
+        l.match_confidence AS link_confidence,
+        l.match_method AS link_method,
+        l.matched_by AS link_matched_by,
+
+        tv.team_id AS team_id,
+        t.name AS team_name,
+
+        COALESCE(
+          NULLIF((
+            SELECT json_group_array(
+              json_object('species_name', pi.species_name, 'is_lead', bbp.is_lead)
+            )
+            FROM battle_brought_pokemon bbp
+            JOIN battle_pokemon_instances pi ON pi.id = bbp.pokemon_instance_id
+            WHERE bbp.battle_id = b.id
+              AND bbp.side = us.side
+          ), '[]'),
+          (
+            SELECT json_group_array(
+              json_object('species_name', p.species_name, 'is_lead', 0)
+            )
+            FROM (
+              SELECT species_name
+              FROM battle_preview_pokemon
+              WHERE battle_id = b.id AND side = us.side
+              ORDER BY slot_index
+            ) p
+          ),
+          '[]'
+        ) AS user_brought_json,
+
+        COALESCE(
+          NULLIF((
+            SELECT json_group_array(
+              json_object('species_name', pi.species_name, 'is_lead', bbp.is_lead)
+            )
+            FROM battle_brought_pokemon bbp
+            JOIN battle_pokemon_instances pi ON pi.id = bbp.pokemon_instance_id
+            WHERE bbp.battle_id = b.id
+              AND bbp.side = CASE
+                WHEN us.side = 'p1' THEN 'p2'
+                WHEN us.side = 'p2' THEN 'p1'
+                ELSE NULL
+              END
+          ), '[]'),
+          (
+            SELECT json_group_array(
+              json_object('species_name', p.species_name, 'is_lead', 0)
+            )
+            FROM (
+              SELECT species_name
+              FROM battle_preview_pokemon
+              WHERE battle_id = b.id AND side = CASE
+                WHEN us.side = 'p1' THEN 'p2'
+                WHEN us.side = 'p2' THEN 'p1'
+                ELSE NULL
+              END
+              ORDER BY slot_index
+            ) p
+          ),
+          '[]'
+        ) AS opponent_brought_json
+
+      FROM battles b
+
+      LEFT JOIN battle_sides us
+        ON us.battle_id = b.id AND us.is_user = 1
+
+      LEFT JOIN battle_sides os
+        ON os.battle_id = b.id
+      AND os.side = CASE
+          WHEN us.side = 'p1' THEN 'p2'
+          WHEN us.side = 'p2' THEN 'p1'
+          ELSE NULL
+        END
+
+      LEFT JOIN battle_team_links l
+        ON l.battle_id = b.id AND l.side = us.side
+
+      LEFT JOIN team_versions tv
+        ON tv.id = l.team_version_id
+
+      LEFT JOIN teams t
+        ON t.id = tv.team_id
+
+      ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
+      LIMIT @limit OFFSET @offset;
+    `),
+    getBattleRow: db2.prepare(`
+      SELECT
+        id,
+        replay_id,
+        replay_url,
+        replay_json_url,
+        format_id,
+        format_name,
+        gen,
+        game_type,
+        upload_time,
+        played_at,
+        views,
+        rating,
+        is_private,
+        is_rated,
+        winner_side,
+        winner_name,
+        created_at
+      FROM battles
+      WHERE id = ?
+      LIMIT 1
+    `),
+    listBattleSides: db2.prepare(`
+      SELECT side, is_user, player_name, avatar, rating
+      FROM battle_sides
+      WHERE battle_id = ?
+      ORDER BY side ASC
+    `),
+    listBattlePreview: db2.prepare(`
+      SELECT side, slot_index, species_name, level, gender, shiny, raw_text
+      FROM battle_preview_pokemon
+      WHERE battle_id = ?
+      ORDER BY side ASC, slot_index ASC
+    `),
+    listBattleRevealed: db2.prepare(`
+      SELECT
+        side,
+        species_name,
+        nickname,
+        item_name,
+        ability_name,
+        tera_type,
+        level,
+        gender,
+        shiny,
+        moves_json,
+        raw_fragment
+      FROM battle_revealed_sets
+      WHERE battle_id = ?
+      ORDER BY side ASC, species_name ASC
+    `),
+    readUserSideLink: db2.prepare(`
+      SELECT
+        l.team_version_id,
+        l.match_confidence,
+        l.match_method,
+        l.matched_by
       FROM battle_team_links l
       JOIN battle_sides s
         ON s.battle_id = l.battle_id
-      AND s.side = l.side
-      AND s.is_user = 1
-      WHERE l.battle_id = b.id
-        AND l.team_version_id IS NOT NULL
-    )
-    ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
-    LIMIT ?
-  `);
-  const listBattleEventsStmt = db2.prepare(`
-    SELECT event_index, turn_num, line_type, raw_line
-    FROM battle_events
-    WHERE battle_id = ?
-    ORDER BY event_index ASC
-  `);
-  const previewCountsBySideStmt = db2.prepare(`
-    SELECT side, COUNT(*) AS c
-    FROM battle_preview_pokemon
-    WHERE battle_id = ?
-    GROUP BY side
-  `);
-  const revealedCountsBySideStmt = db2.prepare(`
-    SELECT side, COUNT(*) AS c
-    FROM battle_revealed_sets
-    WHERE battle_id = ?
-    GROUP BY side
-  `);
-  const listBattlesStmt = db2.prepare(`
-    SELECT
-      b.id,
-      b.replay_id,
-      b.format_id,
-      b.format_name,
-      b.game_type,
-      b.played_at,
-      b.upload_time,
-      b.created_at,
-      b.is_rated,
-      b.is_private,
-      b.winner_side,
-      b.winner_name,
-
-      us.side AS user_side,
-      us.player_name AS user_player_name,
-
-      os.player_name AS opponent_name,
-
-      CASE
-        WHEN us.side IS NULL OR b.winner_side IS NULL THEN NULL
-        WHEN b.winner_side = us.side THEN 'win'
-        ELSE 'loss'
-      END AS result,
-
-      l.team_version_id AS linked_team_version_id,
-      l.match_confidence AS link_confidence,
-      l.match_method AS link_method,
-      l.matched_by AS link_matched_by,
-
-      tv.team_id AS team_id,
-      t.name AS team_name,
-
-      COALESCE(
-        NULLIF((
-          SELECT json_group_array(
-            json_object('species_name', pi.species_name, 'is_lead', bbp.is_lead)
-          )
-          FROM battle_brought_pokemon bbp
-          JOIN battle_pokemon_instances pi ON pi.id = bbp.pokemon_instance_id
-          WHERE bbp.battle_id = b.id
-            AND bbp.side = us.side
-        ), '[]'),
-        (
-          SELECT json_group_array(
-            json_object('species_name', p.species_name, 'is_lead', 0)
-          )
-          FROM (
-            SELECT species_name
-            FROM battle_preview_pokemon
-            WHERE battle_id = b.id AND side = us.side
-            ORDER BY slot_index
-          ) p
-        ),
-        '[]'
-      ) AS user_brought_json,
-
-      COALESCE(
-        NULLIF((
-          SELECT json_group_array(
-            json_object('species_name', pi.species_name, 'is_lead', bbp.is_lead)
-          )
-          FROM battle_brought_pokemon bbp
-          JOIN battle_pokemon_instances pi ON pi.id = bbp.pokemon_instance_id
-          WHERE bbp.battle_id = b.id
-            AND bbp.side = CASE
-              WHEN us.side = 'p1' THEN 'p2'
-              WHEN us.side = 'p2' THEN 'p1'
-              ELSE NULL
-            END
-        ), '[]'),
-        (
-          SELECT json_group_array(
-            json_object('species_name', p.species_name, 'is_lead', 0)
-          )
-          FROM (
-            SELECT species_name
-            FROM battle_preview_pokemon
-            WHERE battle_id = b.id AND side = CASE
-              WHEN us.side = 'p1' THEN 'p2'
-              WHEN us.side = 'p2' THEN 'p1'
-              ELSE NULL
-            END
-            ORDER BY slot_index
-          ) p
-        ),
-        '[]'
-      ) AS opponent_brought_json
-
-    FROM battles b
-
-    LEFT JOIN battle_sides us
-      ON us.battle_id = b.id AND us.is_user = 1
-
-    LEFT JOIN battle_sides os
-      ON os.battle_id = b.id
-    AND os.side = CASE
-        WHEN us.side = 'p1' THEN 'p2'
-        WHEN us.side = 'p2' THEN 'p1'
-        ELSE NULL
-      END
-
-    LEFT JOIN battle_team_links l
-      ON l.battle_id = b.id AND l.side = us.side
-
-    LEFT JOIN team_versions tv
-      ON tv.id = l.team_version_id
-
-    LEFT JOIN teams t
-      ON t.id = tv.team_id
-
-    ORDER BY COALESCE(b.played_at, b.upload_time, b.created_at) DESC
-    LIMIT @limit OFFSET @offset;
-  `);
-  const getBattleRowStmt = db2.prepare(`
-    SELECT
-      id,
-      replay_id,
-      replay_url,
-      replay_json_url,
-      format_id,
-      format_name,
-      gen,
-      game_type,
-      upload_time,
-      played_at,
-      views,
-      rating,
-      is_private,
-      is_rated,
-      winner_side,
-      winner_name,
-      created_at
-    FROM battles
-    WHERE id = ?
-    LIMIT 1
-  `);
-  const listBattleSidesStmt = db2.prepare(`
-    SELECT side, is_user, player_name, avatar, rating
-    FROM battle_sides
-    WHERE battle_id = ?
-    ORDER BY side ASC
-  `);
-  const listBattlePreviewStmt = db2.prepare(`
-    SELECT side, slot_index, species_name, level, gender, shiny, raw_text
-    FROM battle_preview_pokemon
-    WHERE battle_id = ?
-    ORDER BY side ASC, slot_index ASC
-  `);
-  const listBattleRevealedStmt = db2.prepare(`
-    SELECT
-      side,
-      species_name,
-      nickname,
-      item_name,
-      ability_name,
-      tera_type,
-      level,
-      gender,
-      shiny,
-      moves_json,
-      raw_fragment
-    FROM battle_revealed_sets
-    WHERE battle_id = ?
-    ORDER BY side ASC, species_name ASC
-  `);
-  const readUserSideLinkStmt = db2.prepare(`
-    SELECT
-      l.team_version_id,
-      l.match_confidence,
-      l.match_method,
-      l.matched_by
-    FROM battle_team_links l
-    JOIN battle_sides s
-      ON s.battle_id = l.battle_id
-     AND s.side = l.side
-     AND s.is_user = 1
-    WHERE l.battle_id = ?
-    LIMIT 1
-  `);
-  function normalizeFormatKey(format_id, format_name) {
-    const key = String(format_id ?? format_name ?? "").trim();
-    return key.length ? key : null;
-  }
-  function uniqPreserveOrder(xs) {
-    const out = [];
-    const seen = /* @__PURE__ */ new Set();
-    for (const x of xs) {
-      const v = x.trim();
-      if (!v) continue;
-      const k = v.toLowerCase();
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(v);
-    }
-    return out;
-  }
+       AND s.side = l.side
+       AND s.is_user = 1
+      WHERE l.battle_id = ?
+      LIMIT 1
+    `),
+    getBattleIdByReplayId: db2.prepare(`
+      SELECT id
+      FROM battles
+      WHERE replay_id = ?
+      LIMIT 1
+    `),
+    getBattleSetForBattle: db2.prepare(`
+      SELECT
+        sg.set_id AS id,
+        sg.game_number AS game_number,
+        sg.total_games AS total_games
+      FROM battle_set_games sg
+      WHERE sg.battle_id = ?
+      LIMIT 1
+    `),
+    listBattleSetGames: db2.prepare(`
+      SELECT
+        b.id AS battle_id,
+        b.replay_id AS replay_id,
+        b.played_at AS played_at,
+        sg.game_number AS game_number
+      FROM battle_set_games sg
+      JOIN battles b ON b.id = sg.battle_id
+      WHERE sg.set_id = ?
+      ORDER BY
+        CASE WHEN sg.game_number IS NULL THEN 1 ELSE 0 END,
+        sg.game_number ASC,
+        COALESCE(b.played_at, b.upload_time, b.created_at) ASC,
+        b.id ASC
+    `)
+  };
+  const write = {
+    upsertLink: db2.prepare(`
+      INSERT INTO battle_team_links (
+        battle_id, side, team_version_id,
+        match_confidence, match_method,
+        matched_at, matched_by
+      ) VALUES (
+        @battle_id, @side, @team_version_id,
+        @match_confidence, @match_method,
+        @matched_at, @matched_by
+      )
+      ON CONFLICT(battle_id, side) DO UPDATE SET
+        team_version_id = excluded.team_version_id,
+        match_confidence = excluded.match_confidence,
+        match_method = excluded.match_method,
+        matched_at = excluded.matched_at,
+        matched_by = excluded.matched_by
+    `),
+    upsertBattleHeader: db2.prepare(`
+      INSERT INTO battles (
+        id, replay_id, replay_url, replay_json_url,
+        format_id, format_name, gen, game_type,
+        upload_time, played_at, views, rating,
+        is_private, is_rated,
+        bestof_group_id, bestof_game_num, bestof_total,
+        winner_side, winner_name,
+        raw_json, raw_log,
+        created_at
+      ) VALUES (
+        @id, @replay_id, @replay_url, @replay_json_url,
+        @format_id, @format_name, @gen, @game_type,
+        @upload_time, @played_at, @views, @rating,
+        @is_private, @is_rated,
+        @bestof_group_id, @bestof_game_num, @bestof_total,
+        @winner_side, @winner_name,
+        @raw_json, @raw_log,
+        @created_at
+      )
+      ON CONFLICT(replay_id) DO UPDATE SET
+        replay_url       = excluded.replay_url,
+        replay_json_url  = excluded.replay_json_url,
+        format_id        = excluded.format_id,
+        format_name      = excluded.format_name,
+        gen              = excluded.gen,
+        game_type        = excluded.game_type,
+        upload_time      = excluded.upload_time,
+        played_at        = excluded.played_at,
+        views            = excluded.views,
+        rating           = excluded.rating,
+        is_private       = excluded.is_private,
+        is_rated         = excluded.is_rated,
+        bestof_group_id  = excluded.bestof_group_id,
+        bestof_game_num  = excluded.bestof_game_num,
+        bestof_total     = excluded.bestof_total,
+        winner_side      = excluded.winner_side,
+        winner_name      = excluded.winner_name,
+        raw_json         = excluded.raw_json,
+        raw_log          = excluded.raw_log
+    `),
+    deleteBattleEvents: db2.prepare(`DELETE FROM battle_events WHERE battle_id = ?`),
+    deleteBattleSides: db2.prepare(`DELETE FROM battle_sides WHERE battle_id = ?`),
+    deleteBattlePreview: db2.prepare(`DELETE FROM battle_preview_pokemon WHERE battle_id = ?`),
+    deleteBattleRevealed: db2.prepare(`DELETE FROM battle_revealed_sets WHERE battle_id = ?`),
+    deleteBattleSwitches: db2.prepare(`DELETE FROM battle_switches WHERE battle_id = ?`),
+    deleteBattleMoves: db2.prepare(`DELETE FROM battle_moves WHERE battle_id = ?`),
+    deleteBattleBrought: db2.prepare(`DELETE FROM battle_brought_pokemon WHERE battle_id = ?`),
+    deleteBattleInstances: db2.prepare(`DELETE FROM battle_pokemon_instances WHERE battle_id = ?`),
+    deleteBattleLinksAll: db2.prepare(`DELETE FROM battle_team_links WHERE battle_id = ?`),
+    deleteBattleLinksNonUser: db2.prepare(`DELETE FROM battle_team_links WHERE battle_id = ? AND matched_by != 'user'`),
+    deleteBattleAnalysisRuns: db2.prepare(`DELETE FROM battle_analysis_runs WHERE battle_id = ?`)
+  };
   return {
+    // ---- Existing reads ----
     getUserSide(battleId) {
-      const row = getUserSideStmt.get(battleId);
+      const row = stmt.getUserSide.get(battleId);
       return (row == null ? void 0 : row.side) ?? null;
     },
     getBattleMeta(battleId) {
-      const row = getBattleMetaStmt.get(battleId);
+      const row = stmt.getBattleMeta.get(battleId);
       if (!row) return null;
       const formatKey = normalizeFormatKey(row.format_id, row.format_name);
       if (!formatKey) return null;
       return { formatKey, gameType: row.game_type ?? null };
     },
     getRevealedSpecies(battleId, side) {
-      const rows = getRevealedSpeciesStmt.all(battleId, side);
+      const rows = stmt.getRevealedSpecies.all(battleId, side);
       return uniqPreserveOrder(rows.map((r) => (r.species_name ?? "").trim()).filter(Boolean));
     },
     getPreviewSpecies(battleId, side) {
-      const rows = getPreviewSpeciesStmt.all(battleId, side);
+      const rows = stmt.getPreviewSpecies.all(battleId, side);
       return uniqPreserveOrder(rows.map((r) => (r.species_name ?? "").trim()).filter(Boolean));
     },
     readExistingLink(battleId, side) {
-      const row = readExistingLinkStmt.get(battleId, side);
+      const row = stmt.readExistingLink.get(battleId, side);
       return row ?? null;
     },
+    // ---- Writes ----
     upsertLink(args) {
       const matched_at = args.matchedAtUnix ?? Math.floor(Date.now() / 1e3);
-      upsertLinkStmt.run({
+      write.upsertLink.run({
         battle_id: args.battleId,
         side: args.side,
         team_version_id: args.teamVersionId,
@@ -1663,50 +1765,47 @@ function battleRepo(db2) {
         matched_by: args.matchedBy
       });
     },
+    // ---- Backfill helpers ----
     listBackfillCandidateBattleIds(args) {
       var _a;
-      const limit = args.limit;
+      const limit = clampInt(args.limit, 1, 1e3);
       const formatKey = ((_a = args.formatKeyHint) == null ? void 0 : _a.trim()) || null;
       let rows = [];
       if (formatKey) {
-        rows = listCandidateBattleIdsByFormatStmt.all(formatKey, limit);
+        rows = stmt.listCandidateBattleIdsByFormat.all(formatKey, limit);
       }
       if (!rows.length) {
-        rows = listCandidateBattleIdsAnyFormatStmt.all(limit);
+        rows = stmt.listCandidateBattleIdsAnyFormat.all(limit);
       }
       return rows;
     },
-    // Optional debug helpers (safe to delete if you don’t want them)
+    // ---- Optional diagnostics ----
     getPreviewCountsBySide(battleId) {
-      return previewCountsBySideStmt.all(battleId);
+      return stmt.previewCountsBySide.all(battleId);
     },
     getRevealedCountsBySide(battleId) {
-      return revealedCountsBySideStmt.all(battleId);
+      return stmt.revealedCountsBySide.all(battleId);
     },
+    // ---- List / details ----
     listBattles(args) {
-      const limit = Math.max(1, Math.min(500, (args == null ? void 0 : args.limit) ?? 200));
-      const offset = Math.max(0, (args == null ? void 0 : args.offset) ?? 0);
-      return listBattlesStmt.all({ limit, offset });
+      const limit = clampInt((args == null ? void 0 : args.limit) ?? 200, 1, 500);
+      const offset = clampInt((args == null ? void 0 : args.offset) ?? 0, 0, 1e6);
+      return stmt.listBattles.all({ limit, offset });
     },
     getBattleDetails(battleId) {
       var _a, _b, _c;
-      const battle = getBattleRowStmt.get(battleId);
-      if (!battle) return null;
-      const sides = listBattleSidesStmt.all(battleId);
-      const preview = listBattlePreviewStmt.all(battleId);
-      const revealed = listBattleRevealedStmt.all(battleId);
+      const battleRow = stmt.getBattleRow.get(battleId);
+      if (!battleRow) return null;
+      const sides = stmt.listBattleSides.all(battleId);
+      const preview = stmt.listBattlePreview.all(battleId);
+      const revealed = stmt.listBattleRevealed.all(battleId);
+      const events = stmt.listBattleEvents.all(battleId);
       const userSide = ((_a = sides.find((s) => s.is_user === 1)) == null ? void 0 : _a.side) ?? null;
-      const userLink = readUserSideLinkStmt.get(battleId) ?? null;
-      const events = listBattleEventsStmt.all(battleId);
-      if (battle.winner_side == null && battle.winner_name) {
-        const p1 = ((_b = sides.find((s) => s.side === "p1")) == null ? void 0 : _b.player_name) ?? null;
-        const p2 = ((_c = sides.find((s) => s.side === "p2")) == null ? void 0 : _c.player_name) ?? null;
-        const w = normalizeShowdownName$1(battle.winner_name);
-        const p1n = p1 ? normalizeShowdownName$1(p1) : null;
-        const p2n = p2 ? normalizeShowdownName$1(p2) : null;
-        if (w && p1n && w === p1n) battle.winner_side = "p1";
-        else if (w && p2n && w === p2n) battle.winner_side = "p2";
-      }
+      const userLink = stmt.readUserSideLink.get(battleId) ?? null;
+      const p1Name = ((_b = sides.find((s) => s.side === "p1")) == null ? void 0 : _b.player_name) ?? null;
+      const p2Name = ((_c = sides.find((s) => s.side === "p2")) == null ? void 0 : _c.player_name) ?? null;
+      const inferredWinnerSide = battleRow.winner_side ?? inferWinnerSideFromNames({ winnerName: battleRow.winner_name, p1Name, p2Name });
+      const battle = inferredWinnerSide ? { ...battleRow, winner_side: inferredWinnerSide } : battleRow;
       return {
         battle,
         sides,
@@ -1721,6 +1820,38 @@ function battleRepo(db2) {
           matched_by: userLink.matched_by
         } : null
       };
+    },
+    getBattleSetSummary(battleId) {
+      const setRow = stmt.getBattleSetForBattle.get(battleId);
+      if (!setRow) return null;
+      const games = stmt.listBattleSetGames.all(setRow.id);
+      return {
+        id: setRow.id,
+        game_number: setRow.game_number ?? null,
+        total_games: setRow.total_games ?? null,
+        games
+      };
+    },
+    // ---- Ingestion idempotency helpers ----
+    getBattleIdByReplayId(replayId) {
+      const row = stmt.getBattleIdByReplayId.get(replayId);
+      return (row == null ? void 0 : row.id) ?? null;
+    },
+    upsertBattleHeader(row) {
+      write.upsertBattleHeader.run(row);
+    },
+    clearBattleDerivedRows(battleId, opts = { preserveUserLinks: true, clearAi: true }) {
+      write.deleteBattleEvents.run(battleId);
+      write.deleteBattleSides.run(battleId);
+      write.deleteBattlePreview.run(battleId);
+      write.deleteBattleRevealed.run(battleId);
+      write.deleteBattleSwitches.run(battleId);
+      write.deleteBattleMoves.run(battleId);
+      write.deleteBattleBrought.run(battleId);
+      write.deleteBattleInstances.run(battleId);
+      if (opts.preserveUserLinks) write.deleteBattleLinksNonUser.run(battleId);
+      else write.deleteBattleLinksAll.run(battleId);
+      if (opts.clearAi) write.deleteBattleAnalysisRuns.run(battleId);
     }
   };
 }
@@ -1736,6 +1867,9 @@ async function fetchReplayJson(jsonUrl) {
   } finally {
     clearTimeout(t);
   }
+}
+function uuid$2() {
+  return crypto.randomUUID();
 }
 function parsePipeLine$1(line) {
   const parts = line.split("|");
@@ -1765,7 +1899,7 @@ function deriveFromEventLine(rawLine) {
   if (!side) return null;
   const species = parseSpeciesFromDetails(details);
   if (!species) return null;
-  return { side, species, source: type };
+  return { side, species };
 }
 function deriveBroughtFromEvents(db2, battleId) {
   const selectEventsStmt = db2.prepare(`
@@ -1778,15 +1912,28 @@ function deriveBroughtFromEvents(db2, battleId) {
     DELETE FROM battle_brought_pokemon
     WHERE battle_id = ?
   `);
-  const insertStmt = db2.prepare(`
-    INSERT INTO battle_brought_pokemon (
-      battle_id, side, species_name, first_seen_event_index, source
+  const findInstanceStmt = db2.prepare(`
+    SELECT id
+    FROM battle_pokemon_instances
+    WHERE battle_id = ? AND side = ? AND LOWER(species_name) = LOWER(?)
+    LIMIT 1
+  `);
+  const insertInstanceStmt = db2.prepare(`
+    INSERT INTO battle_pokemon_instances (
+      id, battle_id, side, species_name
     ) VALUES (
-      @battle_id, @side, @species_name, @first_seen_event_index, @source
+      @id, @battle_id, @side, @species_name
     )
-    ON CONFLICT(battle_id, side, species_name) DO UPDATE SET
-      first_seen_event_index = MIN(first_seen_event_index, excluded.first_seen_event_index),
-      source = excluded.source
+  `);
+  const insertBroughtStmt = db2.prepare(`
+    INSERT INTO battle_brought_pokemon (
+      battle_id, side, pokemon_instance_id, is_lead, fainted
+    ) VALUES (
+      @battle_id, @side, @pokemon_instance_id, @is_lead, @fainted
+    )
+    ON CONFLICT(battle_id, side, pokemon_instance_id) DO UPDATE SET
+      is_lead = MAX(is_lead, excluded.is_lead),
+      fainted = MAX(fainted, excluded.fainted)
   `);
   const events = selectEventsStmt.all(battleId);
   const firstSeen = /* @__PURE__ */ new Map();
@@ -1800,15 +1947,44 @@ function deriveBroughtFromEvents(db2, battleId) {
         battle_id: battleId,
         side: hit.side,
         species_name: hit.species,
-        first_seen_event_index: e.event_index,
-        source: hit.source
+        first_seen_event_index: e.event_index
       });
     }
   }
   const rows = Array.from(firstSeen.values());
   db2.transaction(() => {
     deleteExistingStmt.run(battleId);
-    for (const r of rows) insertStmt.run(r);
+    const instanceCache = /* @__PURE__ */ new Map();
+    for (const r of rows) {
+      const key = `${r.side}|${r.species_name.toLowerCase()}`;
+      let instanceId = instanceCache.get(key);
+      if (!instanceId) {
+        const found = findInstanceStmt.get(
+          r.battle_id,
+          r.side,
+          r.species_name
+        );
+        if (found == null ? void 0 : found.id) {
+          instanceId = found.id;
+        } else {
+          instanceId = uuid$2();
+          insertInstanceStmt.run({
+            id: instanceId,
+            battle_id: r.battle_id,
+            side: r.side,
+            species_name: r.species_name
+          });
+        }
+        instanceCache.set(key, instanceId);
+      }
+      insertBroughtStmt.run({
+        battle_id: r.battle_id,
+        side: r.side,
+        pokemon_instance_id: instanceId,
+        is_lead: 0,
+        fainted: 0
+      });
+    }
   })();
   let p1 = 0;
   let p2 = 0;
@@ -1866,10 +2042,10 @@ function parseShowteamBlob(blob) {
   }
   return out;
 }
-function uuid() {
+function uuid$1() {
   return crypto.randomUUID();
 }
-function nowUnix() {
+function nowUnix$1() {
   return Math.floor(Date.now() / 1e3);
 }
 function getSetting(db2, key) {
@@ -1951,23 +2127,6 @@ function makeIsUserFn(db2) {
 }
 function prepareStatements(db2) {
   return {
-    insertBattle: db2.prepare(`
-      INSERT INTO battles (
-        id, replay_id, replay_url, replay_json_url,
-        format_id, format_name, gen, game_type,
-        upload_time, played_at, views, rating, is_private, is_rated,
-        winner_side, winner_name,
-        raw_json, raw_log,
-        created_at
-      ) VALUES (
-        @id, @replay_id, @replay_url, @replay_json_url,
-        @format_id, @format_name, @gen, @game_type,
-        @upload_time, @played_at, @views, @rating, @is_private, @is_rated,
-        @winner_side, @winner_name,
-        @raw_json, @raw_log,
-        @created_at
-      );
-    `),
     insertSide: db2.prepare(`
       INSERT INTO battle_sides (battle_id, side, is_user, player_name, avatar, rating)
       VALUES (@battle_id, @side, @is_user, @player_name, @avatar, @rating);
@@ -2014,9 +2173,13 @@ function prepareStatements(db2) {
     `)
   };
 }
-function ingestReplayJson(db2, replayUrl, replayJsonUrl, json) {
-  const now = nowUnix();
-  const battleId = uuid();
+function ingestReplayJson(db2, battleRepo2, replayUrl, replayJsonUrl, json) {
+  const now = nowUnix$1();
+  if (!(json == null ? void 0 : json.id)) {
+    throw new Error("Replay JSON missing id");
+  }
+  const existingBattleId = battleRepo2.getBattleIdByReplayId(json.id);
+  const battleId = existingBattleId ?? uuid$1();
   const lines = parseLogLines(json.log ?? "");
   const playedAt = firstTUnix(lines) ?? (json.uploadtime ?? now);
   const isRated = hasRatedLine(lines) ? 1 : 0;
@@ -2029,7 +2192,7 @@ function ingestReplayJson(db2, replayUrl, replayJsonUrl, json) {
   let currentT = null;
   const previewSlotCounter = { p1: 0, p2: 0 };
   db2.transaction(() => {
-    stmts.insertBattle.run({
+    battleRepo2.upsertBattleHeader({
       id: battleId,
       replay_id: json.id,
       replay_url: replayUrl,
@@ -2044,12 +2207,20 @@ function ingestReplayJson(db2, replayUrl, replayJsonUrl, json) {
       rating: json.rating ?? null,
       is_private: json.private ? 1 : 0,
       is_rated: isRated,
+      // Bo3 columns remain optional; fill later if you parse them
+      bestof_group_id: null,
+      bestof_game_num: null,
+      bestof_total: null,
       winner_side: winnerSide,
       winner_name: winnerName,
       raw_json: JSON.stringify(json),
       raw_log: json.log ?? "",
+      // created_at should remain the original insert time if existing.
+      // Your upsert keeps created_at from the original row; however, since you always pass @created_at,
+      // it will be ignored on conflict (not updated). That is what we want.
       created_at: now
     });
+    battleRepo2.clearBattleDerivedRows(battleId, { preserveUserLinks: true, clearAi: true });
     for (const raw of lines) {
       const parts = parsePipeLine(raw);
       const type = parts[0] ?? "unknown";
@@ -2152,8 +2323,90 @@ function replayUrlFromId(id) {
 function replayJsonUrlFromId(id) {
   return `https://replay.pokemonshowdown.com/${id}.json`;
 }
+function nowUnix() {
+  return Math.floor(Date.now() / 1e3);
+}
+function uuid() {
+  return crypto.randomUUID();
+}
+function computeBatchSetKey(battleIds) {
+  const sorted = [...battleIds].sort();
+  const hash = crypto.createHash("sha1").update(sorted.join(",")).digest("hex");
+  return `batch:${hash}`;
+}
+function prepareSetStatements(db2) {
+  return {
+    // Create or touch a set. We update updated_at on conflict so repeated imports refresh it.
+    upsertSetByKey: db2.prepare(`
+      INSERT INTO battle_sets (
+        id, set_key,
+        format_id, format_name,
+        player1_name, player2_name,
+        source,
+        created_at, updated_at
+      ) VALUES (
+        @id, @set_key,
+        @format_id, @format_name,
+        @player1_name, @player2_name,
+        @source,
+        @created_at, @updated_at
+      )
+      ON CONFLICT(set_key) DO UPDATE SET
+        format_id   = excluded.format_id,
+        format_name = excluded.format_name,
+        player1_name = COALESCE(excluded.player1_name, battle_sets.player1_name),
+        player2_name = COALESCE(excluded.player2_name, battle_sets.player2_name),
+        source      = battle_sets.source, -- don't overwrite "manual" with "import-batch"
+        updated_at  = excluded.updated_at
+    `),
+    readSetIdByKey: db2.prepare(`
+      SELECT id
+      FROM battle_sets
+      WHERE set_key = ?
+      LIMIT 1
+    `),
+    upsertSetGame: db2.prepare(`
+      INSERT INTO battle_set_games (set_id, battle_id, game_number, total_games)
+      VALUES (@set_id, @battle_id, @game_number, @total_games)
+      ON CONFLICT(set_id, battle_id) DO UPDATE SET
+        game_number = excluded.game_number,
+        total_games = excluded.total_games
+    `)
+  };
+}
 function battleIngestService(db2, deps) {
   const { battleRepo: battleRepo2, battleLinkService } = deps;
+  const setStmts = prepareSetStatements(db2);
+  function createOrUpdateBatchSet(args) {
+    const now = nowUnix();
+    const setKey = computeBatchSetKey(args.battleIdsInOrder);
+    const existing = setStmts.readSetIdByKey.get(setKey);
+    const setId = (existing == null ? void 0 : existing.id) ?? uuid();
+    setStmts.upsertSetByKey.run({
+      id: setId,
+      set_key: setKey,
+      format_id: args.formatId ?? null,
+      format_name: args.formatName ?? null,
+      player1_name: args.player1Name ?? null,
+      player2_name: args.player2Name ?? null,
+      source: "import-batch",
+      created_at: now,
+      updated_at: now
+    });
+    const row = setStmts.readSetIdByKey.get(setKey);
+    return (row == null ? void 0 : row.id) ?? setId;
+  }
+  function attachBattlesToSet(args) {
+    const total = args.battleIdsInOrder.length;
+    for (let i = 0; i < args.battleIdsInOrder.length; i++) {
+      setStmts.upsertSetGame.run({
+        set_id: args.setId,
+        battle_id: args.battleIdsInOrder[i],
+        game_number: i + 1,
+        total_games: total
+      });
+    }
+  }
   async function importFromReplaysText(text) {
     const inputs = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     const rows = [];
@@ -2170,12 +2423,21 @@ function battleIngestService(db2, deps) {
       seen.add(k);
       replayIds.push(id);
     }
+    const importedBattleIds = [];
+    let representativeMeta = null;
     for (const replayId of replayIds) {
       const replayUrl = replayUrlFromId(replayId);
       const replayJsonUrl = replayJsonUrlFromId(replayId);
       try {
         const json = await fetchReplayJson(replayJsonUrl);
-        const { battleId } = ingestReplayJson(db2, replayUrl, replayJsonUrl, json);
+        const { battleId } = ingestReplayJson(db2, battleRepo2, replayUrl, replayJsonUrl, json);
+        importedBattleIds.push(battleId);
+        if (!representativeMeta) {
+          representativeMeta = {
+            formatId: json.formatid ?? null,
+            formatName: json.format ?? null
+          };
+        }
         const meta = battleRepo2.getBattleMeta(battleId);
         battleLinkService.autoLinkBattleForUserSide({
           battleId,
@@ -2186,6 +2448,16 @@ function battleIngestService(db2, deps) {
         const msg = e instanceof Error ? e.message : String(e);
         rows.push({ input: replayUrl, ok: false, error: msg });
       }
+    }
+    if (importedBattleIds.length >= 2) {
+      db2.transaction(() => {
+        const setId = createOrUpdateBatchSet({
+          battleIdsInOrder: importedBattleIds,
+          formatId: (representativeMeta == null ? void 0 : representativeMeta.formatId) ?? null,
+          formatName: (representativeMeta == null ? void 0 : representativeMeta.formatName) ?? null
+        });
+        attachBattlesToSet({ setId, battleIdsInOrder: importedBattleIds });
+      })();
     }
     const okCount = rows.filter((r) => r.ok).length;
     const failCount = rows.length - okCount;
@@ -2216,7 +2488,7 @@ function BattleLinkService(db2, deps) {
     };
     const userSide = battleRepo2.getUserSide(battleId);
     if (!userSide) return NOT_LINKED;
-    const speciesList = selectBattleSpeciesForUser(db2, battleId);
+    const speciesList = selectBattleSpeciesForUser(db2, battleId, { minRevealedToTrust: 4 });
     if (speciesList.species.length === 0) return NOT_LINKED;
     const candidates = teamsRepo2.listLatestTeamVersions({
       formatKeyHint: args.formatKeyHint ?? null,
@@ -2531,15 +2803,27 @@ function registerDbHandlers() {
     var _a, _b;
     const d = battles.getBattleDetails(battleId);
     if (!d) return null;
+    const set = battles.getBattleSetSummary(battleId);
     return {
       battle: {
         ...d.battle,
-        // optional fields you might add later:
         team_label: null,
         team_version_label: null,
         match_confidence: ((_a = d.userLink) == null ? void 0 : _a.match_confidence) ?? null,
         match_method: ((_b = d.userLink) == null ? void 0 : _b.match_method) ?? null
       },
+      set: set ? {
+        id: set.id,
+        game_number: set.game_number ?? null,
+        total_games: set.total_games ?? (set.games.length || null),
+        games: set.games.map((g) => ({
+          battle_id: g.battle_id,
+          replay_id: g.replay_id,
+          played_at: g.played_at,
+          game_number: g.game_number ?? 0
+          // frontend prefers number; see note below
+        }))
+      } : null,
       sides: d.sides,
       preview: d.preview,
       revealed: d.revealed,

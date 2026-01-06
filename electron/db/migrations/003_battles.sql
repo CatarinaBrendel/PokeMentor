@@ -401,3 +401,43 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 
 -- Helpful index not really needed because PK already indexed.
+
+-- =====================================================================
+-- Best-of sets (Bo3 / match containers)
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS battle_sets (
+  id TEXT PRIMARY KEY,                 -- uuid
+  set_key TEXT UNIQUE,                 -- deterministic key when created from a batch import (optional but recommended)
+
+  format_id TEXT,
+  format_name TEXT,
+
+  player1_name TEXT,                   -- optional, normalized/display
+  player2_name TEXT,
+
+  source TEXT NOT NULL DEFAULT 'manual'
+    CHECK (source IN ('manual','auto','import-batch')),
+
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_battle_sets_format
+ON battle_sets(format_id);
+
+CREATE TABLE IF NOT EXISTS battle_set_games (
+  set_id TEXT NOT NULL REFERENCES battle_sets(id) ON DELETE CASCADE,
+  battle_id TEXT NOT NULL REFERENCES battles(id) ON DELETE CASCADE,
+
+  game_number INTEGER,                 -- 1..N, nullable until known
+  total_games INTEGER,                 -- e.g. 3 for Bo3; nullable
+
+  PRIMARY KEY (set_id, battle_id),
+  UNIQUE (set_id, game_number)         -- prevents two battles claiming "Game 1" in same set
+);
+
+CREATE INDEX IF NOT EXISTS idx_set_games_battle
+ON battle_set_games(battle_id);
+
+CREATE INDEX IF NOT EXISTS idx_set_games_set
+ON battle_set_games(set_id);

@@ -140,6 +140,19 @@ export type BattleDetailsDto = {
     match_confidence?: number | null;
     match_method?: string | null;
   };
+
+  set?: {
+    id: string;
+    game_number: number;    // 1..N for THIS battle within set
+    total_games: number;    // N
+    games: Array<{
+      battle_id: string;
+      replay_id: string | null;
+      played_at: number | null;
+      game_number: number;
+    }>;
+  } | null;
+
   sides: Array<{
     side: "p1" | "p2";
     is_user: 0 | 1;

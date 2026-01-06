@@ -13,6 +13,11 @@ export type TryLinkResult = {
   overlap: number;
 };
 
+type BattleSpeciesList = {
+  species: string[];
+  source: SpeciesSource;
+};
+
 function normalizeSpecies(name: string): string {
   // Keep simple + stable. If you later want to normalize forms, do it here.
   return name.trim().toLowerCase();
@@ -43,6 +48,7 @@ export function tryLinkBattleToTeamVersion(
   args: {
     battleId: string;
     teamVersionId: string;
+    battleSpecies?: BattleSpeciesList;
     minOverlap?: number;
     minConfidence?: number;
   }

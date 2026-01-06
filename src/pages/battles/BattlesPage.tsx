@@ -288,7 +288,12 @@ export function BattlesPage({ initialSelectedId }: Props) {
           </div>
 
           <div className="col-span-8 min-h-0">
-            <BattleDetailsPanel battle={selected} details={details} loading={detailsLoading} />
+            <BattleDetailsPanel 
+              battle={selected} 
+              details={details} 
+              loading={detailsLoading} 
+              onSelectBattleId={(id) => setSelectedId(id)}
+            />
           </div>
         </div>
       </div>

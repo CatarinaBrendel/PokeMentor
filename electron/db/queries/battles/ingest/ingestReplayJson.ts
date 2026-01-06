@@ -5,6 +5,7 @@ import type { ShowdownReplayJson } from "./fetchReplayJson";
 import { deriveBroughtFromEvents } from "./deriveBroughtFromEvents";
 import { parseShowteamBlob } from "./parseShowteam";
 import { normalizeShowdownName } from "../utils/normalizeShowdownName";
+import type { BattleRepo } from "../repo/battleRepo"; // NEW: repo dependency
 
 type Side = "p1" | "p2";
 
@@ -107,7 +108,6 @@ function parsePreviewMon(rawText: string): {
   level: number | null;
   gender: "M" | "F" | null;
 } {
-  // Example: "Okidogi, L50, M"
   const bits = rawText.split(",").map((s) => s.trim()).filter(Boolean);
   const species = (bits[0] ?? "").trim();
 
@@ -131,24 +131,6 @@ function makeIsUserFn(db: BetterSqlite3.Database): (playerName: string) => 0 | 1
 
 function prepareStatements(db: BetterSqlite3.Database) {
   return {
-    insertBattle: db.prepare(`
-      INSERT INTO battles (
-        id, replay_id, replay_url, replay_json_url,
-        format_id, format_name, gen, game_type,
-        upload_time, played_at, views, rating, is_private, is_rated,
-        winner_side, winner_name,
-        raw_json, raw_log,
-        created_at
-      ) VALUES (
-        @id, @replay_id, @replay_url, @replay_json_url,
-        @format_id, @format_name, @gen, @game_type,
-        @upload_time, @played_at, @views, @rating, @is_private, @is_rated,
-        @winner_side, @winner_name,
-        @raw_json, @raw_log,
-        @created_at
-      );
-    `),
-
     insertSide: db.prepare(`
       INSERT INTO battle_sides (battle_id, side, is_user, player_name, avatar, rating)
       VALUES (@battle_id, @side, @is_user, @player_name, @avatar, @rating);
@@ -201,12 +183,21 @@ function prepareStatements(db: BetterSqlite3.Database) {
 
 export function ingestReplayJson(
   db: BetterSqlite3.Database,
+  battleRepo: BattleRepo, // NEW: inject repo to avoid re-implementing db logic here
   replayUrl: string,
   replayJsonUrl: string,
   json: ShowdownReplayJson
 ): { battleId: string } {
   const now = nowUnix();
-  const battleId = uuid();
+
+  if (!json?.id) {
+    throw new Error("Replay JSON missing id");
+  }
+
+  // Idempotency key: replay_id (unique)
+  const existingBattleId = battleRepo.getBattleIdByReplayId(json.id);
+  const battleId = existingBattleId ?? uuid();
+
   const lines = parseLogLines(json.log ?? "");
 
   const playedAt = firstTUnix(lines) ?? (json.uploadtime ?? now);
@@ -223,7 +214,8 @@ export function ingestReplayJson(
   const previewSlotCounter: Record<Side, number> = { p1: 0, p2: 0 };
 
   db.transaction(() => {
-    stmts.insertBattle.run({
+    // Upsert battle header first (creates or updates)
+    battleRepo.upsertBattleHeader({
       id: battleId,
       replay_id: json.id,
       replay_url: replayUrl,
@@ -241,14 +233,26 @@ export function ingestReplayJson(
       is_private: json.private ? 1 : 0,
       is_rated: isRated,
 
+      // Bo3 columns remain optional; fill later if you parse them
+      bestof_group_id: null,
+      bestof_game_num: null,
+      bestof_total: null,
+
       winner_side: winnerSide,
       winner_name: winnerName,
 
       raw_json: JSON.stringify(json),
       raw_log: json.log ?? "",
+      // created_at should remain the original insert time if existing.
+      // Your upsert keeps created_at from the original row; however, since you always pass @created_at,
+      // it will be ignored on conflict (not updated). That is what we want.
       created_at: now,
     });
 
+    // Clear derived rows so the import is deterministic
+    battleRepo.clearBattleDerivedRows(battleId, { preserveUserLinks: true, clearAi: true });
+
+    // Re-insert children from log
     for (const raw of lines) {
       const parts = parsePipeLine(raw);
       const type = parts[0] ?? "unknown";
@@ -303,28 +307,27 @@ export function ingestReplayJson(
         const blob = parts.slice(2).join("|");
 
         if (side === "p1" || side === "p2") {
-            const entries = parseShowteamBlob(blob);
+          const entries = parseShowteamBlob(blob);
 
-            for (const parsed of entries) {
+          for (const parsed of entries) {
             stmts.insertRevealed.run({
-                battle_id: battleId,
-                side,
-                species_name: parsed.species,
-                nickname: parsed.nickname,
-                item_name: parsed.item,
-                ability_name: parsed.ability,
-                tera_type: parsed.tera,
-                level: parsed.level,
-                gender: parsed.gender,
-                shiny: 0,
-                moves_json: JSON.stringify(parsed.moves),
-                raw_fragment: parsed.raw,
+              battle_id: battleId,
+              side,
+              species_name: parsed.species,
+              nickname: parsed.nickname,
+              item_name: parsed.item,
+              ability_name: parsed.ability,
+              tera_type: parsed.tera,
+              level: parsed.level,
+              gender: parsed.gender,
+              shiny: 0,
+              moves_json: JSON.stringify(parsed.moves),
+              raw_fragment: parsed.raw,
             });
-            }
+          }
         }
-        }
+      }
 
-      // Store every raw line as an event (minimal normalized fields for now)
       stmts.insertEvent.run({
         battle_id: battleId,
         event_index: eventIndex++,
@@ -353,9 +356,10 @@ export function ingestReplayJson(
     }
   })();
 
-  // Derivation step stays in ingest layer.
+  // Derived step (writes more tables). This should be idempotent too:
+  // Ideally deriveBroughtFromEvents clears/rebuilds its own output (battle_brought_pokemon etc.) OR
+  // relies on the clearing we did above.
   deriveBroughtFromEvents(db, battleId);
 
-  // IMPORTANT: Linking is done by BattleIngestService or BattleLinkService.
   return { battleId };
 }

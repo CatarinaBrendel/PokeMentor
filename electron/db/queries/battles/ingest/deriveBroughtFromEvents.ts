@@ -37,6 +37,7 @@
 //
 // This module does not depend on any other ingest helpers.
 
+import crypto from "node:crypto";
 import type BetterSqlite3 from "better-sqlite3";
 
 type Side = "p1" | "p2";
@@ -46,8 +47,11 @@ type BroughtRow = {
   side: Side;
   species_name: string;
   first_seen_event_index: number;
-  source: string;
 };
+
+function uuid(): string {
+  return crypto.randomUUID();
+}
 
 function parsePipeLine(line: string): string[] {
   const parts = line.split("|");
@@ -72,7 +76,7 @@ function parseSpeciesFromDetails(details: string): string | null {
   return species || null;
 }
 
-function deriveFromEventLine(rawLine: string): { side: Side; species: string; source: string } | null {
+function deriveFromEventLine(rawLine: string): { side: Side; species: string } | null {
   const parts = parsePipeLine(rawLine);
   const type = (parts[0] ?? "").trim();
 
@@ -87,7 +91,7 @@ function deriveFromEventLine(rawLine: string): { side: Side; species: string; so
   const species = parseSpeciesFromDetails(details);
   if (!species) return null;
 
-  return { side, species, source: type };
+  return { side, species };
 }
 
 /**
@@ -113,15 +117,30 @@ export function deriveBroughtFromEvents(
     WHERE battle_id = ?
   `);
 
-  const insertStmt = db.prepare(`
-    INSERT INTO battle_brought_pokemon (
-      battle_id, side, species_name, first_seen_event_index, source
+  const findInstanceStmt = db.prepare(`
+    SELECT id
+    FROM battle_pokemon_instances
+    WHERE battle_id = ? AND side = ? AND LOWER(species_name) = LOWER(?)
+    LIMIT 1
+  `);
+
+  const insertInstanceStmt = db.prepare(`
+    INSERT INTO battle_pokemon_instances (
+      id, battle_id, side, species_name
     ) VALUES (
-      @battle_id, @side, @species_name, @first_seen_event_index, @source
+      @id, @battle_id, @side, @species_name
     )
-    ON CONFLICT(battle_id, side, species_name) DO UPDATE SET
-      first_seen_event_index = MIN(first_seen_event_index, excluded.first_seen_event_index),
-      source = excluded.source
+  `);
+
+  const insertBroughtStmt = db.prepare(`
+    INSERT INTO battle_brought_pokemon (
+      battle_id, side, pokemon_instance_id, is_lead, fainted
+    ) VALUES (
+      @battle_id, @side, @pokemon_instance_id, @is_lead, @fainted
+    )
+    ON CONFLICT(battle_id, side, pokemon_instance_id) DO UPDATE SET
+      is_lead = MAX(is_lead, excluded.is_lead),
+      fainted = MAX(fainted, excluded.fainted)
   `);
 
   const events = selectEventsStmt.all(battleId) as Array<{ event_index: number; raw_line: string }>;
@@ -140,7 +159,6 @@ export function deriveBroughtFromEvents(
         side: hit.side,
         species_name: hit.species,
         first_seen_event_index: e.event_index,
-        source: hit.source,
       });
     }
   }
@@ -149,7 +167,43 @@ export function deriveBroughtFromEvents(
 
   db.transaction(() => {
     deleteExistingStmt.run(battleId);
-    for (const r of rows) insertStmt.run(r);
+
+    const instanceCache = new Map<string, string>();
+
+    for (const r of rows) {
+      const key = `${r.side}|${r.species_name.toLowerCase()}`;
+      let instanceId = instanceCache.get(key);
+
+      if (!instanceId) {
+        const found = findInstanceStmt.get(
+          r.battle_id,
+          r.side,
+          r.species_name
+        ) as { id: string } | undefined;
+
+        if (found?.id) {
+          instanceId = found.id;
+        } else {
+          instanceId = uuid();
+          insertInstanceStmt.run({
+            id: instanceId,
+            battle_id: r.battle_id,
+            side: r.side,
+            species_name: r.species_name,
+          });
+        }
+
+        instanceCache.set(key, instanceId);
+      }
+
+      insertBroughtStmt.run({
+        battle_id: r.battle_id,
+        side: r.side,
+        pokemon_instance_id: instanceId,
+        is_lead: 0,
+        fainted: 0,
+      });
+    }
   })();
 
   let p1 = 0;

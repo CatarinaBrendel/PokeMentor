@@ -40,8 +40,37 @@ function sideLabel(side: "p1" | "p2") {
   return side.toUpperCase();
 }
 
+/** Winner inference: use stored winner_side when present; otherwise infer from |win| event + player names. */
+function normalizeNameForCompare(s: string): string {
+  return s.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function inferWinnerSideFromEvents(dto: BattleDetailsDto | null | undefined): "p1" | "p2" | null {
+  if (!dto) return null;
+  if (dto.battle?.winner_side) return dto.battle.winner_side;
+
+  const win = (dto.events ?? []).find((e) => e.line_type === "win");
+  if (!win) return null;
+
+  const parts = win.raw_line.split("|").filter(Boolean);
+  const winnerName = (parts[1] ?? "").trim();
+  if (!winnerName) return null;
+
+  const p1 = dto.sides.find((s) => s.side === "p1")?.player_name ?? "";
+  const p2 = dto.sides.find((s) => s.side === "p2")?.player_name ?? "";
+
+  const w = normalizeNameForCompare(winnerName);
+  const p1n = normalizeNameForCompare(p1);
+  const p2n = normalizeNameForCompare(p2);
+
+  if (w && p1n && w === p1n) return "p1";
+  if (w && p2n && w === p2n) return "p2";
+  return null;
+}
+
 function isWinner(dto: BattleDetailsDto | null | undefined, side: "p1" | "p2") {
-  return dto?.battle.winner_side != null && dto.battle.winner_side === side;
+  const ws = inferWinnerSideFromEvents(dto);
+  return ws != null && ws === side;
 }
 
 function metaBits(dto: BattleDetailsDto | null | undefined, side: "p1" | "p2") {
@@ -85,11 +114,11 @@ type TimelineEvent = {
   line_type: string;
   raw_line: string;
   turn_num?: number | null;
-  event_index?: number | null;
+  event_index: number;
 };
 
 function pickTimelineEvents(dto: BattleDetailsDto | null | undefined): TimelineEvent[] {
-  const xs = (dto as any)?.events ?? [];
+  const xs = dto?.events ?? [];
 
   // Only main, turn-relevant events (no gametype/player/gen/etc.)
   const keep = new Set(["turn", "switch", "drag", "move", "faint", "win"]);
@@ -153,9 +182,7 @@ function toTimelineRows(dto: BattleDetailsDto | null | undefined) {
 function TimelineRow({ label, text }: { label: string; text: string }) {
   return (
     <div className="flex items-start gap-3">
-      <div className="w-16 shrink-0 text-xs font-semibold text-black/45">
-        {label || ""}
-      </div>
+      <div className="w-16 shrink-0 text-xs font-semibold text-black/45">{label || ""}</div>
       <div className="flex-1">{text}</div>
     </div>
   );
@@ -179,7 +206,7 @@ function sideFromActor(actor: string): "p1" | "p2" | null {
 }
 
 function isDoublesFromEvents(dto: BattleDetailsDto | null | undefined): boolean {
-  const xs = (dto as any)?.events ?? [];
+  const xs = dto?.events ?? [];
   // Look at early switch/drag/replace lines for p1b/p2b
   for (const e of xs as Array<{ line_type: string; raw_line: string }>) {
     if (e.line_type === "turn") break; // once turns start, stop scanning “opening”
@@ -198,7 +225,7 @@ function leadSpeciesFromEvents(
   side: "p1" | "p2",
   leadCount: number
 ): string[] {
-  const xs = (dto as any)?.events ?? [];
+  const xs = dto?.events ?? [];
   const seen = new Set<string>();
   const out: string[] = [];
 
@@ -252,30 +279,66 @@ function orderedPreviewForSide(
 export function BattleDetails({
   battle,
   details,
+  onSelectBattleId,
 }: {
   battle: BattleListItem;
   details?: BattleDetailsDto | null;
+  onSelectBattleId?: (battleId: string) => void;
 }) {
   const userSide = userSideFromDto(details);
   const yourSide: "p1" | "p2" | null = userSide;
   const oppSide: "p1" | "p2" | null = userSide ? (userSide === "p1" ? "p2" : "p1") : null;
-  
+
   const yourPreview = yourSide ? orderedPreviewForSide(details, yourSide) : [];
   const oppPreview = oppSide ? orderedPreviewForSide(details, oppSide) : [];
-  
-  const yourName =
-    yourSide ? details?.sides.find((s) => s.side === yourSide)?.player_name ?? null : null;
 
-  const oppName =
-    oppSide ? details?.sides.find((s) => s.side === oppSide)?.player_name ?? null : null;
+  const yourName = yourSide ? details?.sides.find((s) => s.side === yourSide)?.player_name ?? null : null;
 
-  const yourMeta = yourSide ? metaBits(details, yourSide) : { rating: null, side: "p1" as const, winner: false };
-  const oppMeta = oppSide ? metaBits(details, oppSide) : { rating: null, side: "p2" as const, winner: false };
+  const oppName = oppSide ? details?.sides.find((s) => s.side === oppSide)?.player_name ?? null : null;
+
+  const yourMeta = yourSide
+    ? metaBits(details, yourSide)
+    : { rating: null, side: "p1" as const, winner: false };
+  const oppMeta = oppSide
+    ? metaBits(details, oppSide)
+    : { rating: null, side: "p2" as const, winner: false };
 
   const replayUrl = details?.battle.replay_url ?? null;
   const timelineRows = useMemo(() => toTimelineRows(details), [details]);
-  
   const meta = details?.battle;
+
+  // --- Set (Bo3) navigation (null-safe sorting + display fallbacks) ---
+  const setInfo = details?.set ?? null;
+
+  const orderedGames = useMemo(() => {
+    const xs = setInfo?.games ?? [];
+    return [...xs].sort((a, b) => {
+      const ga = a.game_number ?? 1_000_000;
+      const gb = b.game_number ?? 1_000_000;
+      if (ga !== gb) return ga - gb;
+
+      const ta = a.played_at ?? 0;
+      const tb = b.played_at ?? 0;
+      if (ta !== tb) return ta - tb;
+
+      return a.battle_id.localeCompare(b.battle_id);
+    });
+  }, [setInfo]);
+
+  const currentIdx = useMemo(() => {
+    if (!setInfo) return -1;
+    return orderedGames.findIndex((g) => g.battle_id === battle.id);
+  }, [setInfo, orderedGames, battle.id]);
+
+  const canNav = !!onSelectBattleId && setInfo && orderedGames.length >= 2;
+  const prevBattleId = canNav && currentIdx > 0 ? orderedGames[currentIdx - 1].battle_id : null;
+  const nextBattleId =
+    canNav && currentIdx >= 0 && currentIdx < orderedGames.length - 1
+      ? orderedGames[currentIdx + 1].battle_id
+      : null;
+
+  const displayGameNum = setInfo?.game_number ?? (currentIdx >= 0 ? currentIdx + 1 : null);
+  const displayTotalGames = setInfo?.total_games ?? (orderedGames.length || null);
 
   return (
     <div className="p-6">
@@ -316,6 +379,57 @@ export function BattleDetails({
         </div>
       </div>
 
+      {setInfo && orderedGames.length >= 2 ? (
+        <div className="mt-6 rounded-3xl bg-white/70 p-4 ring-1 ring-black/10">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-black/75">Set</div>
+              <div className="mt-1 text-sm text-black/55">
+                Game {displayGameNum ?? "—"} of {displayTotalGames ?? "—"}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                className="h-9 rounded-2xl bg-white/70 px-3 text-sm ring-1 ring-black/10 hover:bg-white/85 disabled:opacity-50"
+                disabled={!prevBattleId}
+                onClick={() => prevBattleId && onSelectBattleId?.(prevBattleId)}
+              >
+                Prev
+              </button>
+              <button
+                className="h-9 rounded-2xl bg-white/70 px-3 text-sm ring-1 ring-black/10 hover:bg-white/85 disabled:opacity-50"
+                disabled={!nextBattleId}
+                onClick={() => nextBattleId && onSelectBattleId?.(nextBattleId)}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            {orderedGames.map((g, idx) => {
+              const active = g.battle_id === battle.id;
+              const labelNum = g.game_number ?? idx + 1;
+              return (
+                <button
+                  key={g.battle_id}
+                  className={cx(
+                    "h-8 rounded-2xl px-3 text-sm ring-1",
+                    active
+                      ? "bg-black/80 text-white ring-black/10"
+                      : "bg-white/70 text-black/60 ring-black/10 hover:bg-white/85"
+                  )}
+                  onClick={() => onSelectBattleId?.(g.battle_id)}
+                >
+                  Game {labelNum}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
       {/* Team vs Opponent */}
       <div className="mt-6 grid grid-cols-2 gap-4">
         <div className="rounded-3xl bg-white/70 p-4 ring-1 ring-black/10">
@@ -327,11 +441,6 @@ export function BattleDetails({
             ) : (
               <div className="mt-3 text-xs text-black/45">No team preview available.</div>
             )}
-          </div>
-
-          <div className="mt-2 text-sm text-black/55">
-            {battle.teamLabel ?? "Unlinked team"}
-            {battle.teamVersionLabel ? ` · ${battle.teamVersionLabel}` : ""}
           </div>
 
           {meta?.team_label ? (
@@ -398,10 +507,12 @@ export function BattleDetailsPanel({
   battle,
   details,
   loading,
+  onSelectBattleId,
 }: {
   battle: BattleListItem | null;
   details?: BattleDetailsDto | null;
   loading?: boolean;
+  onSelectBattleId?: (battleId: string) => void;
 }) {
   return (
     <div className="col-span-8 flex h-full min-h-0 flex-col rounded-3xl bg-white/50 ring-1 ring-black/5">
@@ -411,7 +522,7 @@ export function BattleDetailsPanel({
         ) : loading ? (
           <div className="p-6 text-sm text-black/55">Loading battle details…</div>
         ) : (
-          <BattleDetails battle={battle} details={details} />
+          <BattleDetails battle={battle} details={details} onSelectBattleId={onSelectBattleId} />
         )}
       </div>
     </div>
