@@ -36,9 +36,20 @@ function safeJson<T>(s: string | null | undefined, fallback: T): T {
   }
 }
 
+function normalizeShowdownName(name: string): string {
+  return name.trim().replace(/^☆+/, "").replace(/\s+/g, "").toLowerCase();
+}
+
 function toUiRow(r: BattleListRow): BattleListItem {
-  const result: BattleListItem["result"] =
-    r.result === "win" || r.result === "loss" ? r.result : "unknown";
+  const result: BattleListItem["result"] = (() => {
+    if (r.result === "win" || r.result === "loss") return r.result;
+    if (r.winner_name && r.user_player_name) {
+      const winner = normalizeShowdownName(r.winner_name);
+      const user = normalizeShowdownName(r.user_player_name);
+      if (winner && user) return winner === user ? "win" : "loss";
+    }
+    return "unknown";
+  })();
 
   const format_ps = r.format_id ?? r.format_name ?? null;
 

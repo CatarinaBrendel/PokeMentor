@@ -1915,7 +1915,10 @@ function findWinner(lines) {
       if (side === "p2") p2 = name ?? null;
     }
   }
-  const winnerSide = winnerName === p1 ? "p1" : winnerName === p2 ? "p2" : null;
+  const winnerNorm = normalizeShowdownName$1(winnerName);
+  const p1Norm = p1 ? normalizeShowdownName$1(p1) : null;
+  const p2Norm = p2 ? normalizeShowdownName$1(p2) : null;
+  const winnerSide = winnerNorm && p1Norm && winnerNorm === p1Norm ? "p1" : winnerNorm && p2Norm && winnerNorm === p2Norm ? "p2" : null;
   return { winnerName, winnerSide };
 }
 function parsePreviewMon(rawText) {

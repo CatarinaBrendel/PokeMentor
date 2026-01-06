@@ -91,8 +91,16 @@ function findWinner(lines: string[]): { winnerName: string | null; winnerSide: S
     }
   }
 
+  const winnerNorm = normalizeShowdownName(winnerName);
+  const p1Norm = p1 ? normalizeShowdownName(p1) : null;
+  const p2Norm = p2 ? normalizeShowdownName(p2) : null;
+
   const winnerSide: Side | null =
-    winnerName === p1 ? "p1" : winnerName === p2 ? "p2" : null;
+    winnerNorm && p1Norm && winnerNorm === p1Norm
+      ? "p1"
+      : winnerNorm && p2Norm && winnerNorm === p2Norm
+        ? "p2"
+        : null;
 
   return { winnerName, winnerSide };
 }
