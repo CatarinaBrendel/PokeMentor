@@ -4,6 +4,7 @@ import type BetterSqlite3 from "better-sqlite3";
 import type { ShowdownReplayJson } from "./fetchReplayJson";
 import { deriveBroughtFromEvents } from "./deriveBroughtFromEvents";
 import { parseShowteamBlob } from "./parseShowteam";
+import { normalizeShowdownName } from "../utils/normalizeShowdownName";
 
 type Side = "p1" | "p2";
 
@@ -20,10 +21,6 @@ function getSetting(db: BetterSqlite3.Database, key: string): string | null {
     | { value: string }
     | undefined;
   return row?.value ?? null;
-}
-
-function normalizeShowdownName(name: string): string {
-  return name.trim().replace(/^☆+/, "").replace(/\s+/g, "").toLowerCase();
 }
 
 function parseLogLines(rawLog: string): string[] {

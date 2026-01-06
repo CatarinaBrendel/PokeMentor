@@ -1322,6 +1322,12 @@ class TeamActiveService {
     return this.getActiveTeamActivity();
   }
 }
+function normalizeShowdownName$1(name) {
+  if (!name) return "";
+  const trimmed = name.trim().replace(/^[@☆★+%~*&]+/, "");
+  const id = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return id || trimmed.toLowerCase().replace(/\s+/g, "");
+}
 function battleRepo(db2) {
   const getUserSideStmt = db2.prepare(`
     SELECT side
@@ -1683,7 +1689,7 @@ function battleRepo(db2) {
       return listBattlesStmt.all({ limit, offset });
     },
     getBattleDetails(battleId) {
-      var _a;
+      var _a, _b, _c;
       const battle = getBattleRowStmt.get(battleId);
       if (!battle) return null;
       const sides = listBattleSidesStmt.all(battleId);
@@ -1692,6 +1698,15 @@ function battleRepo(db2) {
       const userSide = ((_a = sides.find((s) => s.is_user === 1)) == null ? void 0 : _a.side) ?? null;
       const userLink = readUserSideLinkStmt.get(battleId) ?? null;
       const events = listBattleEventsStmt.all(battleId);
+      if (battle.winner_side == null && battle.winner_name) {
+        const p1 = ((_b = sides.find((s) => s.side === "p1")) == null ? void 0 : _b.player_name) ?? null;
+        const p2 = ((_c = sides.find((s) => s.side === "p2")) == null ? void 0 : _c.player_name) ?? null;
+        const w = normalizeShowdownName$1(battle.winner_name);
+        const p1n = p1 ? normalizeShowdownName$1(p1) : null;
+        const p2n = p2 ? normalizeShowdownName$1(p2) : null;
+        if (w && p1n && w === p1n) battle.winner_side = "p1";
+        else if (w && p2n && w === p2n) battle.winner_side = "p2";
+      }
       return {
         battle,
         sides,
@@ -1860,9 +1875,6 @@ function nowUnix() {
 function getSetting(db2, key) {
   const row = db2.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
   return (row == null ? void 0 : row.value) ?? null;
-}
-function normalizeShowdownName$1(name) {
-  return name.trim().replace(/^☆+/, "").replace(/\s+/g, "").toLowerCase();
 }
 function parseLogLines(rawLog) {
   return rawLog.split("\n").map((s) => s.trimEnd()).filter((s) => s.length > 0);
@@ -2245,12 +2257,8 @@ function BattleLinkService(db2, deps) {
       method: best.method
     };
   }
-  function backfillForTeamVersion(args) {
-    throw new Error("backfillForTeamVersion not implemented: call teams/linking/backfillLinksForTeamVersion.ts directly.");
-  }
   return {
-    autoLinkBattleForUserSide,
-    backfillForTeamVersion
+    autoLinkBattleForUserSide
   };
 }
 function normalizeShowdownName(name) {

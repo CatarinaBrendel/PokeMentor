@@ -100,19 +100,7 @@ export function BattleLinkService(db: BetterSqlite3.Database, deps: BattleLinkSe
     };
   }
 
-  /**
-   * When a team version is imported, scan recent battles and link those that match.
-   * You already have this as backfillLinksForTeamVersion — you can call that here instead,
-   * but keeping this method here is useful as a public service API.
-   */
-  function backfillForTeamVersion(args: { teamVersionId: string; formatKeyHint?: string | null; limit?: number }) {
-    // Prefer using your existing backfillLinksForTeamVersion module.
-    // If you want, we can wire it in here directly.
-    throw new Error("backfillForTeamVersion not implemented: call teams/linking/backfillLinksForTeamVersion.ts directly.");
-  }
-
   return {
     autoLinkBattleForUserSide,
-    backfillForTeamVersion,
   };
 }

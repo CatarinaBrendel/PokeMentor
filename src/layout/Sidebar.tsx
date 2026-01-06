@@ -41,7 +41,7 @@ function cx(...xs: Array<string | false | null | undefined>) {
 const NAV: Array<{ key: NavKey; label: string; Icon: React.ElementType }> = [
   { key: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
   { key: "live", label: "Live Coaching", Icon: Activity },
-  { key: "reviews", label: "Battle Reviews", Icon: ListChecks },
+  { key: "reviews", label: "Battles Review", Icon: ListChecks },
   { key: "paths", label: "Learning Paths", Icon: GraduationCap },
   { key: "practice", label: "Practice Scenarios", Icon: Swords },
   { key: "teams", label: "Teams", Icon: Users },

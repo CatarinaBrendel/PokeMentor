@@ -1,5 +1,6 @@
 // battles/repo/battleRepo.ts
 import type BetterSqlite3 from "better-sqlite3";
+import { normalizeShowdownName } from "../utils/normalizeShowdownName";
 
 export type Side = "p1" | "p2";
 
@@ -575,6 +576,19 @@ export function battleRepo(db: BetterSqlite3.Database) {
         | undefined) ?? null;
 
       const events = listBattleEventsStmt.all(battleId) as BattleEventRow[];
+
+      // Fallback for legacy rows: infer winner_side from winner_name + player names.
+      if (battle.winner_side == null && battle.winner_name) {
+        const p1 = sides.find((s) => s.side === "p1")?.player_name ?? null;
+        const p2 = sides.find((s) => s.side === "p2")?.player_name ?? null;
+
+        const w = normalizeShowdownName(battle.winner_name);
+        const p1n = p1 ? normalizeShowdownName(p1) : null;
+        const p2n = p2 ? normalizeShowdownName(p2) : null;
+
+        if (w && p1n && w === p1n) battle.winner_side = "p1";
+        else if (w && p2n && w === p2n) battle.winner_side = "p2";
+      }
 
       return {
         battle,
