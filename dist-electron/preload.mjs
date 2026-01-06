@@ -42,5 +42,8 @@ electron.contextBridge.exposeInMainWorld("api", {
   },
   ai: {
     getEvTrainingRecipe: (args) => electron.ipcRenderer.invoke("ai:evs:recipe", args)
+  },
+  dashboard: {
+    getKpis: () => electron.ipcRenderer.invoke("db:dashboard:getKpis")
   }
 });

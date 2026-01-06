@@ -1,49 +1,50 @@
 import React from "react";
 import { KpiCard } from "./KpiCard";
-import { PrimaryLeakCard, PrimaryLeakKpi } from "./PrimaryLeakCard";
 
 type KpiCardsRowProps = {
+  battlesTotal: number;
   wins: number;
   losses: number;
-  clutchPercent: number;
-  primaryLeak: PrimaryLeakKpi;
+  winratePercent: number;
+  teamsTotal: number;
+  teamVersionsTotal: number;
 };
 
 export default function KpiCardsRow({
+  battlesTotal,
   wins,
   losses,
-  clutchPercent,
-  primaryLeak,
+  winratePercent,
+  teamsTotal,
+  teamVersionsTotal,
 }: KpiCardsRowProps) {
-  const total = wins + losses;
-  const winRate = total > 0 ? Math.round((wins / total) * 100) : 0;
 
+  const decided = wins + losses;
   return (
     <div className="grid grid-cols-1 gap-8 sm:grid-cols-4">
       <KpiCard
+        title="Imported Battles"
+        value={`${battlesTotal}`}
+        sub="With identified user side"
+      />
+
+      <KpiCard
         title="Overall Record"
         value={`${wins} – ${losses}`}
-        sub={`${total} games`}
+        sub={decided > 0 ? `${decided} decided games` : "No decided games yet"}
       />
 
       <KpiCard
         title="Overall Winrate"
-        value={`${winRate}%`}
-        sub="All formats"
-        accent="positive"
+        value={decided > 0 ? `${winratePercent}%` : "—"}
+        sub={decided > 0 ? "All formats" : "No decided games yet"}
+        accent={decided > 0 ? "positive" : undefined}
       />
 
       <KpiCard
-        title="Clutch Factor"
-        value={`${clutchPercent}%`}
-        sub="Close games"
-        accent="warning"
-      />
-
-      <PrimaryLeakCard
-        label={primaryLeak.label}
-        impactPercent={primaryLeak.impactPercent}
-        onFix={primaryLeak.onFix}
+        title="Teams Imported"
+        value={`${teamsTotal}`}
+        sub={`${teamVersionsTotal} versions`}
       />
     </div>
   );

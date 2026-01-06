@@ -12,6 +12,8 @@ import { ActiveTeamActivity } from "../features/teams/model/teams.types";
 import ActiveTeamActivityCard from "../shared/ui/ActiveTeamActivityCard"
 import { SettingsPage } from "../pages/settings/SettingsPage";
 import { SettingsApi } from "../features/settings/api/settings.api";
+import { DashboardApi } from "../features/dashboard/api/dashboard.api";
+import type { DashboardKpis } from "../features/dashboard/model/dashboard.types";
 
 function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void }) {
   const [activeLeak, setActiveLeak] = useState<string | null>(null);
@@ -27,6 +29,18 @@ function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void })
     null
   );
   const [, setTeamsTab] = usePersistedState<"import" | "list">("teams.tab", "import");
+
+  const [kpis, setKpis] = useState<DashboardKpis | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    DashboardApi.getKpis()
+      .then((x) => alive && setKpis(x))
+      .catch(() => alive && setKpis(null));
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,14 +82,12 @@ function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void })
     <>
       <div className="w-full p-8 space-y-6">
         <KpiCardsRow
-          wins={18}
-          losses={11}
-          clutchPercent={42}
-          primaryLeak={{
-            label: "Over-switching",
-            impactPercent: 14,
-            onFix: () => setActiveLeak("Over-switching"),
-          }}
+          battlesTotal={kpis?.battles_total ?? 0}
+          wins={kpis?.wins ?? 0}
+          losses={kpis?.losses ?? 0}
+          winratePercent={kpis?.winrate_percent ?? 0}
+          teamsTotal={kpis?.teams_total ?? 0}
+          teamVersionsTotal={kpis?.team_versions_total ?? 0}
         />
 
         <ActiveTeamCard
@@ -135,7 +147,6 @@ export default function DashboardRootPage() {
       const hasKey = Boolean(s.openrouter_api_key && s.openrouter_api_key.trim());
       setAiConnected(Boolean(s.ai_enabled ?? true) && hasKey);
     } catch {
-      // optionally toast; but don't block shell rendering
       setShowdownUsername(null);
       setAiConnected(false);
     }
@@ -160,7 +171,6 @@ export default function DashboardRootPage() {
           setAiConnected(Boolean(s.ai_enabled ?? true) && hasKey);
         }
       } catch {
-        // optional: toast, but sidebar can just show placeholder
         if (!cancelled) setAiConnected(false);
       }
     })();

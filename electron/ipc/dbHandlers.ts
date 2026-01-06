@@ -3,24 +3,30 @@ import { ipcMain } from "electron";
 import { getDb } from "../db/index";
 
 // -----------------------------
-// Teams (new structure)
+// Teams
 // -----------------------------
 import { teamsRepo } from "../db/queries/teams/repo/teamsRepo";
 import { teamImportService } from "../db/queries/teams/services/TeamImportService";
 import { TeamActiveService } from "../db/queries/teams/services/TeamActiveService";
 
 // -----------------------------
-// Battles (new structure)
+// Battles
 // -----------------------------
 import { battleRepo } from "../db/queries/battles/repo/battleRepo";
 import { battleIngestService } from "../db/queries/battles/services/BattleIngestService";
 import { BattleLinkService } from "../db/queries/battles/services/BattleLinkService";
 
 // -----------------------------
-// Settings (unchanged)
+// Settings
 // -----------------------------
 import { getSettings, updateSettings } from "../db/queries/settings/settings";
 import { getEvTrainingRecipe } from "../ai/openrouter";
+
+// -----------------------------
+// Dashboard
+// -----------------------------
+import { dashboardRepo } from "../db/queries/dashboard/repo/dashboardRepo";
+import { teamVersionsRepo } from "../db/queries/teams/repo/teamVersions.repo";
 
 /**
  * Centralized registration of DB-backed IPC handlers.
@@ -52,9 +58,7 @@ export function registerDbHandlers() {
 
   const teamImport = teamImportService(db, {
     teamsRepo: teams,
-    // This service triggers relinking of existing battles after import
-    // via post-commit linker in teams/linking (which uses battles matchers).
-    // If your TeamImportService already does it internally, nothing else needed here.
+    battleRepo: battles,
   });
 
   // Teams
@@ -142,5 +146,12 @@ export function registerDbHandlers() {
 
     const model = settings.openrouter_model ?? "openrouter/auto";
     return getEvTrainingRecipe({ apiKey, model, request: args });
+  });
+
+  // Dashbaord
+  const dashboard = dashboardRepo(db);
+
+  ipcMain.handle("db:dashboard:getKpis", async () => {
+    return dashboard.getKpis();
   });
 }

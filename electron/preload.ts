@@ -86,4 +86,7 @@ contextBridge.exposeInMainWorld("api", {
       evs: { hp: number; atk: number; def: number; spa: number; spd: number; spe: number };
     }) => ipcRenderer.invoke("ai:evs:recipe", args),
   },
+  dashboard: {
+    getKpis: () => ipcRenderer.invoke("db:dashboard:getKpis"),
+  },
 });

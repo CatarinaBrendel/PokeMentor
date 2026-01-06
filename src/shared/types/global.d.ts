@@ -6,6 +6,7 @@ import type {
   TeamDetails,
 } from "../../features/teams/model/teams.types";
 import type { TeamListRow } from "../../features/teams/ui/TeamsView";
+import type { DashboardKpis } from "../../features/dashboard/model/dashboard.types";
 
 export {};
 
@@ -104,6 +105,9 @@ declare global {
       };
       ai: {
         getEvTrainingRecipe: (args: EvTrainingRequest) => Promise<EvTrainingRecipe>;
+      };
+      dashboard: {
+        getKpis: () => Promise<DashboardKpis>;
       };
     };
   }

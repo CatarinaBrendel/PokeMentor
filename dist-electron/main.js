@@ -2759,6 +2759,62 @@ async function getEvTrainingRecipe({
   }
   return normalizeRecipe(parsed);
 }
+function dashboardRepo(db2) {
+  function getKpis() {
+    const wlRow = db2.prepare(
+      `
+        WITH inferred_user_side AS (
+          SELECT
+            b.id AS battle_id,
+            COALESCE(
+              (SELECT s.side
+                 FROM battle_sides s
+                WHERE s.battle_id = b.id AND s.is_user = 1
+                LIMIT 1),
+              (SELECT l.side
+                 FROM battle_team_links l
+                WHERE l.battle_id = b.id AND l.team_version_id IS NOT NULL
+                LIMIT 1)
+            ) AS user_side
+          FROM battles b
+        )
+        SELECT
+          -- battles where we can infer a user side
+          SUM(CASE WHEN i.user_side IS NOT NULL THEN 1 ELSE 0 END) AS battles_total,
+
+          -- wins/losses for battles with an inferred user side and a decided winner
+          SUM(CASE WHEN i.user_side IS NOT NULL AND b.winner_side = i.user_side THEN 1 ELSE 0 END) AS wins,
+          SUM(CASE WHEN i.user_side IS NOT NULL AND b.winner_side IS NOT NULL AND b.winner_side <> i.user_side THEN 1 ELSE 0 END) AS losses
+        FROM inferred_user_side i
+        JOIN battles b ON b.id = i.battle_id
+      `
+    ).get();
+    const battles_total = wlRow.battles_total ?? 0;
+    const wins = wlRow.wins ?? 0;
+    const losses = wlRow.losses ?? 0;
+    const decided = wins + losses;
+    const winrate_percent = decided > 0 ? Math.round(wins / decided * 100) : 0;
+    const teamsRow = db2.prepare(`SELECT COUNT(*) AS n FROM teams`).get();
+    const teamVersionsRow = db2.prepare(`SELECT COUNT(*) AS n FROM team_versions`).get();
+    const linkedBattlesRow = db2.prepare(
+      `
+        SELECT COUNT(DISTINCT battle_id) AS n
+        FROM battle_team_links
+        WHERE team_version_id IS NOT NULL
+      `
+    ).get();
+    return {
+      battles_total,
+      wins,
+      losses,
+      winrate_percent,
+      teams_total: teamsRow.n ?? 0,
+      team_versions_total: teamVersionsRow.n ?? 0,
+      linked_battles_total: linkedBattlesRow.n ?? 0
+    };
+  }
+  return { getKpis };
+}
 function registerDbHandlers() {
   const db2 = getDb();
   const teams = teamsRepo(db2);
@@ -2774,9 +2830,6 @@ function registerDbHandlers() {
   const teamActive = new TeamActiveService(teams);
   const teamImport = teamImportService(db2, {
     teamsRepo: teams
-    // This service triggers relinking of existing battles after import
-    // via post-commit linker in teams/linking (which uses battles matchers).
-    // If your TeamImportService already does it internally, nothing else needed here.
   });
   ipcMain.handle("db:teams:list", async () => teams.listTeams());
   ipcMain.handle("db:teams:getDetails", async (_evt, teamId) => teams.getTeamDetails(teamId));
@@ -2852,6 +2905,10 @@ function registerDbHandlers() {
     }
     const model = settings.openrouter_model ?? "openrouter/auto";
     return getEvTrainingRecipe({ apiKey, model, request: args });
+  });
+  const dashboard = dashboardRepo(db2);
+  ipcMain.handle("db:dashboard:getKpis", async () => {
+    return dashboard.getKpis();
   });
 }
 const __filename$1 = fileURLToPath(import.meta.url);
