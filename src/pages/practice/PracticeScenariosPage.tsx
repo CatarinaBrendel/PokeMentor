@@ -1,69 +1,103 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   PracticeHeaderBar,
   PracticeScenarioDetailsPanel,
   PracticeScenarioListPanel,
-} from "./ui";
+} from "../../features/practice/ui";
 import type {
+  PracticeHeaderStats,
   PracticeScenarioDetails,
   PracticeScenarioListItem,
   PracticeTabKey,
-} from "./model/practice.types";
+} from "../../features/practice/model/practice.types";
+
+export type PracticeScenarioIntent = {
+  battleId: string;
+  turnNumber: number;
+};
+
+type SelectedAction =
+  | { kind: "move"; moveName: string }
+  | { kind: "switch"; speciesName: string };
 
 function cx(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
-export default function PracticeScenariosPage() {
+function newId(prefix = "scn") {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function makeScenarioFromIntent(intent: PracticeScenarioIntent): PracticeScenarioListItem {
+  return {
+    id: newId("scn"),
+    title: `Battle ${intent.battleId} · Turn ${intent.turnNumber}`,
+    subtitle: "Created from Battle Review",
+    source: "battle_review",
+    status: "active",
+    format_id: null,
+    team_name: null,
+    battle_id: intent.battleId,
+    turn_number: intent.turnNumber,
+    tags: ["midgame"],
+    attempts_count: 0,
+    last_practiced_at: null,
+    best_rating: null,
+    difficulty: 2,
+  };
+}
+
+export default function PracticeScenariosPage({
+  initialIntent,
+  onConsumedIntent,
+}: {
+  initialIntent?: PracticeScenarioIntent | null;
+  onConsumedIntent?: () => void;
+}) {
   const [tab, setTab] = useState<PracticeTabKey>("mine");
   const [query, setQuery] = useState("");
   const [formatFilter, setFormatFilter] = useState<string>("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedAction, setSelectedAction] = useState<
-    | { kind: "move"; moveName: string }
-    | { kind: "switch"; speciesName: string }
-    | null
-  >(null);
 
-  // Mock data for now (replace with real data from DB later)
-  const mine: PracticeScenarioListItem[] = useMemo(
-    () => [
-      {
-        id: "scn-1",
-        title: "Manage the Endgame (Dragonite)",
-        subtitle: "Choose a line that converts advantage without risking a throw.",
-        source: "battle_review",
-        status: "active",
-        format_id: "gen9ou",
-        team_name: "Balance v3",
-        battle_id: "btl-001",
-        turn_number: 18,
-        tags: ["endgame", "risk", "positioning"],
-        attempts_count: 3,
-        last_practiced_at: new Date(Date.now() - 1000 * 60 * 60 * 22).toISOString(),
-        best_rating: "better",
-        difficulty: 2,
-      },
-      {
-        id: "scn-2",
-        title: "Punish Over-switching",
-        subtitle: "Hold tempo by committing to the right midgame line.",
-        source: "battle_review",
-        status: "draft",
-        format_id: "gen9ou",
-        team_name: "HO v1",
-        battle_id: "btl-008",
-        turn_number: 7,
-        tags: ["midgame", "positioning"],
-        attempts_count: 0,
-        last_practiced_at: null,
-        best_rating: null,
-        difficulty: 3,
-      },
-    ],
-    []
-  );
+  // Action selection state (Part 1 + increment)
+  const [selectedAction, setSelectedAction] = useState<SelectedAction | null>(null);
+
+  // Mock data for now (replace with DB later)
+  const [mine, setMine] = useState<PracticeScenarioListItem[]>([
+    {
+      id: "scn-1",
+      title: "Manage the Endgame (Dragonite)",
+      subtitle: "Choose a line that converts advantage without risking a throw.",
+      source: "battle_review",
+      status: "active",
+      format_id: "gen9ou",
+      team_name: "Balance v3",
+      battle_id: "btl-001",
+      turn_number: 18,
+      tags: ["endgame", "risk", "positioning"],
+      attempts_count: 3,
+      last_practiced_at: new Date(Date.now() - 1000 * 60 * 60 * 22).toISOString(),
+      best_rating: "better",
+      difficulty: 2,
+    },
+    {
+      id: "scn-2",
+      title: "Punish Over-switching",
+      subtitle: "Hold tempo by committing to the right midgame line.",
+      source: "battle_review",
+      status: "draft",
+      format_id: "gen9ou",
+      team_name: "HO v1",
+      battle_id: "btl-008",
+      turn_number: 7,
+      tags: ["midgame", "positioning"],
+      attempts_count: 0,
+      last_practiced_at: null,
+      best_rating: null,
+      difficulty: 3,
+    },
+  ]);
 
   const recommended: PracticeScenarioListItem[] = useMemo(
     () => [
@@ -103,6 +137,19 @@ export default function PracticeScenariosPage() {
     []
   );
 
+  // Consume intent: create scenario + select + switch to "mine"
+  useEffect(() => {
+    if (!initialIntent) return;
+
+    const scn = makeScenarioFromIntent(initialIntent);
+    setMine((prev) => [scn, ...prev]);
+    setSelectedId(scn.id);
+    setTab("mine");
+    setSelectedAction(null);
+
+    onConsumedIntent?.();
+  }, [initialIntent, onConsumedIntent]);
+
   const allItems = tab === "mine" ? mine : recommended;
 
   const filteredItems = useMemo(() => {
@@ -131,10 +178,14 @@ export default function PracticeScenariosPage() {
   const selectedDetails: PracticeScenarioDetails | null = useMemo(() => {
     if (!selectedId) return null;
 
-    const base = [...mine, ...recommended].find((x) => x.id === selectedId);
+    const base = tab === "mine"
+      ? mine.find((x) => x.id === selectedId)
+      : recommended.find((x) => x.id === selectedId);
+
     if (!base) return null;
 
-    // Minimal mock “details” to render the right panel.
+    // Minimal mock details to render the right panel.
+    // Later: hydrate from sim state / DB.
     return {
       id: base.id,
       title: base.title,
@@ -164,7 +215,7 @@ export default function PracticeScenariosPage() {
         },
         bench: [
           { species_name: "Gholdengo", hp_percent: 33 },
-          { species_name: "Tusk", hp_percent: 81 },
+          { species_name: "Great Tusk", hp_percent: 81 },
           { species_name: "Rotom-W", hp_percent: 59 },
         ],
       },
@@ -182,47 +233,27 @@ export default function PracticeScenariosPage() {
             { move_name: "Swords Dance", disabled: true, hint: "Hidden to MVP" },
           ],
         },
-        bench: [
-          { species_name: "Great Tusk", hp_percent: 40 },
-          { species_name: "Gliscor", hp_percent: 12 },
-        ],
+        bench: [{ species_name: "Great Tusk", hp_percent: 40 }],
       },
-      attempts: base.attempts_count
-        ? [
-            {
-              id: "att-1",
-              created_at: new Date(Date.now() - 1000 * 60 * 55).toISOString(),
-              rating: "neutral",
-              summary: "Extreme Speed → traded HP but kept tempo",
-            },
-            {
-              id: "att-2",
-              created_at: new Date(Date.now() - 1000 * 60 * 12).toISOString(),
-              rating: "better",
-              summary: "Roost → stabilized and forced the switch",
-            },
-          ]
-        : [],
+      attempts: [],
     };
-  }, [selectedId, mine, recommended]);
+  }, [mine, recommended, selectedId, tab]);
 
-  const headerStats = useMemo(() => {
-    const items = mine; // “stats” should represent *your* practice activity
+  const headerStats: PracticeHeaderStats = useMemo(() => {
+    const items = mine;
     const scenariosTotal = items.length;
 
-    const practiced = items.filter((x) => x.attempts_count && x.attempts_count > 0);
+    const practiced = items.filter((x) => (x.attempts_count ?? 0) > 0);
     const successCount = items.filter((x) => x.best_rating === "better").length;
-
     const successRate =
       practiced.length > 0 ? Math.round((successCount / practiced.length) * 100) : 0;
 
     const dates = items
       .map((x) => x.last_practiced_at)
-      .filter(Boolean)
-      .sort()
-      
-    const last = dates.length > 0 ? dates[dates.length - 1] : null;
+      .filter((x): x is string => Boolean(x))
+      .sort();
 
+    const last = dates.length > 0 ? dates[dates.length - 1] : null;
     const lastPracticed = last ? new Date(last).toLocaleDateString() : "—";
 
     return { scenariosTotal, successRate, lastPracticed };
@@ -237,33 +268,45 @@ export default function PracticeScenariosPage() {
   }, [mine, recommended]);
 
   function handleNewScenario() {
-    // MVP: no modal yet; we can add later.
-    // For now, select the first item to keep it feeling responsive.
-    if (filteredItems.length > 0) setSelectedId(filteredItems[0].id);
+    // MVP: no modal yet. Keep it simple.
+    setTab("mine");
+  }
+
+  function handleSelectScenario(id: string) {
+    setSelectedId(id);
+    setSelectedAction(null);
   }
 
   function handleSelectMove(moveName: string) {
-    setSelectedAction({ kind: "move", moveName });
+    setSelectedAction((prev) => {
+      if (prev?.kind === "move" && prev.moveName === moveName) return null; // toggle
+      return { kind: "move", moveName };
+    });
   }
 
-  function handleRunOutcome() {
-    // MVP: no sim yet. Keep it visible that something would happen.
-    // You can replace this with IPC later.
-    if (!selectedAction) return;
-    console.log("Run outcome with action:", selectedAction);
+  function handleSelectSwitch(speciesName: string) {
+    setSelectedAction((prev) => {
+      if (prev?.kind === "switch" && prev.speciesName === speciesName) return null; // toggle
+      return { kind: "switch", speciesName };
+    });
   }
 
   function handleClearSelection() {
     setSelectedAction(null);
   }
 
-  function handleSelectSwitch(speciesName: string) {
-    setSelectedAction({ kind: "switch", speciesName });
+  function handleRunOutcome() {
+    if (!selectedAction || !selectedDetails) return;
+    // MVP: no sim yet; keep logging for now.
+    console.log("Run outcome", {
+      scenarioId: selectedDetails.id,
+      action: selectedAction,
+    });
   }
 
   return (
     <div className="w-full p-6 h-full">
-      <div className="flex flex-col gap-5">
+      <div className="flex h-full min-h-0 flex-col gap-5">
         <PracticeHeaderBar
           stats={headerStats}
           query={query}
@@ -271,9 +314,11 @@ export default function PracticeScenariosPage() {
           onNewScenario={handleNewScenario}
         />
 
-        {/* Tabs + Filters */}
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <SegmentedTabs tab={tab} onChange={setTab} />
+          <SegmentedTabs tab={tab} onChange={(k) => {
+            setTab(k);
+            setSelectedAction(null);
+          }} />
 
           <div className="flex items-center gap-2">
             <Select
@@ -285,7 +330,6 @@ export default function PracticeScenariosPage() {
                 ...uniqueFormats.map((f) => ({ value: f, label: f })),
               ]}
             />
-
             <Select
               label="Source"
               value={sourceFilter}
@@ -300,7 +344,6 @@ export default function PracticeScenariosPage() {
           </div>
         </div>
 
-        {/* Main layout */}
         <div className="flex-1 min-h-0">
           <div className="grid h-full max-h-[calc(100vh-260px)] min-h-0 grid-cols-1 gap-4 lg:grid-cols-12">
             <div className="lg:col-span-5 h-full min-h-0">
@@ -308,10 +351,7 @@ export default function PracticeScenariosPage() {
                 title={tab === "mine" ? "My Scenarios" : "Recommended"}
                 items={filteredItems}
                 selectedId={selectedId}
-                onSelect={(id) => {
-                  setSelectedId(id);
-                  setSelectedAction(null);
-                }}
+                onSelect={handleSelectScenario}
               />
             </div>
 

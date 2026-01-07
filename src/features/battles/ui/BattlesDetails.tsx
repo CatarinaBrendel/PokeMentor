@@ -170,19 +170,68 @@ function toTimelineRows(dto: BattleDetailsDto | null | undefined) {
   let lastTurn: number | null = null;
 
   return sorted
-    .filter((e) => e.line_type !== "turn") // don’t show raw |turn| line; we label turns in the left column
+    .filter((e) => e.line_type !== "turn")
     .map((e) => {
       const turn = e.turn_num ?? null;
       const label = turn != null && turn !== lastTurn ? `Turn ${turn}` : "";
       if (turn != null) lastTurn = turn;
-      return { label, text: prettyTimelineText(e) };
+      return { label, text: prettyTimelineText(e), turnNumber: label ? turn : null };
     });
 }
 
-function TimelineRow({ label, text }: { label: string; text: string }) {
+function toTimelineGroups(dto: BattleDetailsDto | null | undefined): Array<{ turn: number; rows: string[] }> {
+  const xs = pickTimelineEvents(dto);
+
+  const sorted = [...xs].sort((a, b) => {
+    const ta = a.turn_num ?? 0;
+    const tb = b.turn_num ?? 0;
+    if (ta !== tb) return ta - tb;
+    return (a.event_index ?? 0) - (b.event_index ?? 0);
+  });
+
+  const groups = new Map<number, string[]>();
+  for (const e of sorted as TimelineEvent[]) {
+    if (e.line_type === "turn") continue;
+    const t = e.turn_num;
+    if (t == null) continue;
+    const arr = groups.get(t) ?? [];
+    arr.push(prettyTimelineText(e));
+    groups.set(t, arr);
+  }
+
+  return Array.from(groups.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([turn, rows]) => ({ turn, rows }));
+}
+
+function TimelineRow({
+  label,
+  text,
+  onCreateTurnScenario,
+}: {
+  label: string;
+  text: string;
+  onCreateTurnScenario?: () => void;
+}) {
   return (
     <div className="flex items-start gap-3">
-      <div className="w-16 shrink-0 text-xs font-semibold text-black/45">{label || ""}</div>
+      <div className="w-16 shrink-0">
+        {label ? (
+          <div className="flex flex-col gap-1">
+            <div className="text-xs font-semibold text-black/45">{label}</div>
+            <button
+              className="h-6 rounded-xl bg-white/70 px-2 text-[11px] ring-1 ring-black/10 hover:bg-white/85 disabled:opacity-50"
+              disabled={!onCreateTurnScenario}
+              onClick={onCreateTurnScenario}
+            >
+              Create
+            </button>
+          </div>
+        ) : (
+          <div className="text-xs font-semibold text-black/45">&nbsp;</div>
+        )}
+      </div>
+
       <div className="flex-1">{text}</div>
     </div>
   );
@@ -280,10 +329,12 @@ export function BattleDetails({
   battle,
   details,
   onSelectBattleId,
+  onCreatePracticeScenarioFromTurn,
 }: {
   battle: BattleListItem;
   details?: BattleDetailsDto | null;
   onSelectBattleId?: (battleId: string) => void;
+  onCreatePracticeScenarioFromTurn?: (args: { battleId: string; turnNumber: number }) => void;
 }) {
   const userSide = userSideFromDto(details);
   const yourSide: "p1" | "p2" | null = userSide;
@@ -305,6 +356,7 @@ export function BattleDetails({
 
   const replayUrl = details?.battle.replay_url ?? null;
   const timelineRows = useMemo(() => toTimelineRows(details), [details]);
+  const timelineGroups = useMemo(() => toTimelineGroups(details), [details]);
   const meta = details?.battle;
 
   // --- Set (Bo3) navigation (null-safe sorting + display fallbacks) ---
@@ -477,14 +529,24 @@ export function BattleDetails({
         </div>
       </div>
 
-      {/* Timeline (fixed height + inner scroll) */}
+      {/* Timeline */}
       <div className="mt-6 rounded-3xl bg-white/70 p-4 ring-1 ring-black/10 flex flex-col">
         <div className="text-sm font-semibold text-black/75 shrink-0">Timeline</div>
 
         <div className="mt-3 space-y-2 text-sm text-black/60 overflow-auto max-h-[120px] pr-2">
           {timelineRows.length ? (
             timelineRows.slice(0, 120).map((row, idx) => (
-              <TimelineRow key={`${idx}-${row.label}`} label={row.label} text={row.text} />
+              <TimelineRow
+                key={`${idx}-${row.label}`}
+                label={row.label}
+                text={row.text}
+                // NEW:
+                onCreateTurnScenario={
+                  row.turnNumber != null && onCreatePracticeScenarioFromTurn
+                    ? () => onCreatePracticeScenarioFromTurn({ battleId: battle.id, turnNumber: row.turnNumber })
+                    : undefined
+                }
+              />
             ))
           ) : (
             <div className="text-xs text-black/45">No timeline events available.</div>
@@ -508,11 +570,13 @@ export function BattleDetailsPanel({
   details,
   loading,
   onSelectBattleId,
+  onCreatePracticeScenarioFromTurn,
 }: {
   battle: BattleListItem | null;
   details?: BattleDetailsDto | null;
   loading?: boolean;
   onSelectBattleId?: (battleId: string) => void;
+  onCreatePracticeScenarioFromTurn?: (args: { battleId: string; turnNumber: number }) => void;
 }) {
   return (
     <div className="col-span-8 flex h-full min-h-0 flex-col rounded-3xl bg-white/50 ring-1 ring-black/5">
@@ -522,7 +586,12 @@ export function BattleDetailsPanel({
         ) : loading ? (
           <div className="p-6 text-sm text-black/55">Loading battle details…</div>
         ) : (
-          <BattleDetails battle={battle} details={details} onSelectBattleId={onSelectBattleId} />
+          <BattleDetails
+            battle={battle}
+            details={details}
+            onSelectBattleId={onSelectBattleId}
+            onCreatePracticeScenarioFromTurn={onCreatePracticeScenarioFromTurn}
+          />
         )}
       </div>
     </div>

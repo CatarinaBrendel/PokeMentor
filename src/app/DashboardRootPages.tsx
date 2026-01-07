@@ -1,22 +1,23 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { DashboardShell, NavKey } from "../layout/DashboardShell";
 import KpiCardsRow from "../shared/ui/KpiCardsRow";
 import FixLeakModal from "../features/coaching/ui/FixLeakModal";
 import { TeamsPage } from "../pages/teams/TeamsPage";
-import { BattlesPage } from "../pages/battles/BattlesPage"
+import { BattlesPage } from "../pages/battles/BattlesPage";
 import ActiveTeamCard from "../shared/ui/ActiveTreamCard";
 import { TeamsApi } from "../features/teams/api/teams.api";
 import type { TeamListRow } from "../features/teams/ui/TeamsView";
 import { usePersistedState } from "../shared/hooks/usePersistedState";
 import { ActiveTeamActivity } from "../features/teams/model/teams.types";
-import ActiveTeamActivityCard from "../shared/ui/ActiveTeamActivityCard"
+import ActiveTeamActivityCard from "../shared/ui/ActiveTeamActivityCard";
 import { SettingsPage } from "../pages/settings/SettingsPage";
 import { SettingsApi } from "../features/settings/api/settings.api";
+import { PracticeScenarioIntent } from "../pages/practice/PracticeScenariosPage";
+import PracticeScenariosPage from "../pages/practice/PracticeScenariosPage";
 import { DashboardApi } from "../features/dashboard/api/dashboard.api";
 import type { DashboardKpis } from "../features/dashboard/model/dashboard.types";
-import PracticeScenariosPage from "../pages/practice/PracticeScenariosPage";
 
-function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void }) {
+function DashboardMain({ onGoTeams }: { onGoTeams: (teamid?: string) => void }) {
   const [activeLeak, setActiveLeak] = useState<string | null>(null);
 
   const [activeTeam, setActiveTeam] = useState<TeamListRow | null>(null);
@@ -32,14 +33,30 @@ function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void })
   const [, setTeamsTab] = usePersistedState<"import" | "list">("teams.tab", "import");
 
   const [kpis, setKpis] = useState<DashboardKpis | null>(null);
+  const [kpisLoading, setKpisLoading] = useState(false);
+  const [kpisError, setKpisError] = useState<string | null>(null);
 
   useEffect(() => {
-    let alive = true;
+    let cancelled = false;
+    setKpisLoading(true);
+    setKpisError(null);
+
     DashboardApi.getKpis()
-      .then((x) => alive && setKpis(x))
-      .catch(() => alive && setKpis(null));
+      .then((x) => {
+        if (cancelled) return;
+        setKpis(x);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setKpisError(e instanceof Error ? e.message : "Failed to load dashboard KPIs.");
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setKpisLoading(false);
+      });
+
     return () => {
-      alive = false;
+      cancelled = true;
     };
   }, []);
 
@@ -91,6 +108,14 @@ function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void })
           teamVersionsTotal={kpis?.team_versions_total ?? 0}
         />
 
+        {kpisLoading ? (
+          <div className="text-sm text-black/50">Loading stats…</div>
+        ) : null}
+
+        {kpisError ? (
+          <div className="text-sm text-red-600">{kpisError}</div>
+        ) : null}
+
         <ActiveTeamCard
           team={activeTeam}
           loading={activeTeamLoading}
@@ -98,7 +123,7 @@ function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void })
           onOpenTeams={openTeams}
           onOpenTeam={openActiveTeam}
         />
-        
+
         <ActiveTeamActivityCard
           activity={activeActivity}
           onOpenLastBattle={() => {
@@ -120,10 +145,12 @@ function DashboardMain({ onGoTeams }: { onGoTeams: (teamid? : string) => void })
 export default function DashboardRootPage() {
   const [page, setPage] = useState<NavKey>("dashboard");
   const [openTeamId, setOpenTeamId] = useState<string | null>(null);
+  const [practiceIntent, setPracticeIntent] = useState<PracticeScenarioIntent | null>(null);
+
   const [showdownUsername, setShowdownUsername] = useState<string | null>(null);
   const [aiConnected, setAiConnected] = useState<boolean>(true);
 
-  const pagesDef: Record<NavKey, React.ReactNode> = {
+  const pagesDef: Record<NavKey, ReactNode> = {
     dashboard: (
       <DashboardMain
         onGoTeams={(teamId?: string) => {
@@ -136,7 +163,12 @@ export default function DashboardRootPage() {
     live: <div className="p-8">Live Coaching (todo)</div>,
     reviews: <BattlesPage />,
     paths: <div className="p-8">Learning Paths (todo)</div>,
-    practice: <PracticeScenariosPage />,
+    practice: (
+      <PracticeScenariosPage
+        initialIntent={practiceIntent}
+        onConsumedIntent={() => setPracticeIntent(null)}
+      />
+    ),
     pokedex: <div className="p-8">Pokedex (todo)</div>,
     settings: <SettingsPage />,
   };
@@ -161,23 +193,19 @@ export default function DashboardRootPage() {
     return () => window.removeEventListener("pm:settings-changed", onChanged);
   }, []);
 
+  // Global navigation intent: create a practice scenario from a battle turn.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const s = await SettingsApi.get();
-        if (!cancelled) {
-          setShowdownUsername(s.showdown_username ?? null);
-          const hasKey = Boolean(s.openrouter_api_key && s.openrouter_api_key.trim());
-          setAiConnected(Boolean(s.ai_enabled ?? true) && hasKey);
-        }
-      } catch {
-        if (!cancelled) setAiConnected(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
+    const onCreate = (ev: Event) => {
+      const e = ev as CustomEvent<{ battleId: string; turnNumber: number }>;
+      if (!e.detail?.battleId || !e.detail?.turnNumber) return;
+
+      setPracticeIntent({ battleId: e.detail.battleId, turnNumber: e.detail.turnNumber });
+      setPage("practice");
     };
+
+    window.addEventListener("pm:create-practice-scenario", onCreate as EventListener);
+    return () =>
+      window.removeEventListener("pm:create-practice-scenario", onCreate as EventListener);
   }, []);
 
   return (
@@ -185,7 +213,12 @@ export default function DashboardRootPage() {
       activePage={page}
       onNavigate={(next) => {
         setPage(next);
-        if (next !== "teams") setOpenTeamId(null); // clear one-shot intent when leaving Teams
+
+        // clear one-shot intent when leaving Teams
+        if (next !== "teams") setOpenTeamId(null);
+
+        // clear one-shot intent when leaving Practice
+        if (next !== "practice") setPracticeIntent(null);
       }}
       pages={pagesDef}
       showdownUsername={showdownUsername}

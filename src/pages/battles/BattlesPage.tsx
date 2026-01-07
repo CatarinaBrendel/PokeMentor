@@ -293,6 +293,13 @@ export function BattlesPage({ initialSelectedId }: Props) {
               details={details} 
               loading={detailsLoading} 
               onSelectBattleId={(id) => setSelectedId(id)}
+              onCreatePracticeScenarioFromTurn={({ battleId, turnNumber }) => {
+                window.dispatchEvent(
+                  new CustomEvent("pm:create-practice-scenario", {
+                    detail: { battleId, turnNumber },
+                  })
+                );
+              }}
             />
           </div>
         </div>

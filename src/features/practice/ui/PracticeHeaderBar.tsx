@@ -1,5 +1,5 @@
 import React from "react";
-import type { PracticeHeaderStats } from "../model/practice.types";
+import type { PracticeHeaderStats } from "../../../features/practice/model/practice.types";
 
 type PracticeHeaderBarProps = {
   stats: PracticeHeaderStats;

@@ -3,7 +3,7 @@ import type {
   PracticeScenarioDetails,
   PracticeActiveMonSummary,
   PracticeAttemptSummary,
-} from "../model/practice.types";
+} from "../../../features/practice/model/practice.types";
 
 type SelectedAction =
   | { kind: "move"; moveName: string }
