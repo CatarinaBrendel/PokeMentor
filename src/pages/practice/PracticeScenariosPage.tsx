@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import {
   PracticeHeaderBar,
   PracticeScenarioDetailsPanel,
@@ -10,41 +10,201 @@ import type {
   PracticeScenarioListItem,
   PracticeTabKey,
 } from "../../features/practice/model/practice.types";
+import { PracticeApi } from "../../features/practice/api/practice.api";
+import type { PracticeScenarioRow, PracticeScenarioTag, PracticeOutcomeRating, PracticeScenarioSource, PracticeScenarioStatus } from "../../features/practice/model/practice.types";
 
 export type PracticeScenarioIntent = {
   battleId: string;
   turnNumber: number;
 };
 
+type BackendSnapshot = {
+  game_type: "singles" | "doubles";
+  user_side: "p1" | "p2" | null;
+
+  actives: Record<
+    SnapshotPosition,
+    { species_name: string; hp_percent: number | null } | null
+  >;
+
+  bench: {
+    p1: Array<{ species_name: string; hp_percent: number | null }>;
+    p2: Array<{ species_name: string; hp_percent: number | null }>;
+  };
+
+  legal_moves: Record<
+    SnapshotPosition,
+    Array<{ move_name: string; disabled?: boolean; hint?: string }>
+  >;
+
+  legal_switches: Record<
+    SnapshotPosition,
+    Array<{ species_name: string }>
+  >;
+};
+
 type SelectedAction =
   | { kind: "move"; moveName: string }
   | { kind: "switch"; speciesName: string };
 
+type SnapshotPosition = "p1a" | "p1b" | "p2a" | "p2b";
+
+const PRACTICE_TAGS = [
+    "endgame",
+    "midgame",
+    "lead",
+    "positioning",
+    "speed_control",
+    "risk",
+  ] as const satisfies ReadonlyArray<PracticeScenarioTag>;
+
+  const PRACTICE_TAG_SET = new Set<string>(PRACTICE_TAGS);
+  function parseTagsJson(tags_json: string | null | undefined): PracticeScenarioTag[] {
+    if (!tags_json) return [];
+    try {
+      const x: unknown = JSON.parse(tags_json);
+      if (!Array.isArray(x)) return [];
+      return x
+        .filter((v): v is string => typeof v === "string")
+        .filter((v) => PRACTICE_TAG_SET.has(v)) as PracticeScenarioTag[];
+    } catch {
+      return [];
+    }
+  }
+
+type PracticeDetailsDto = {
+  id: string;
+  source: PracticeScenarioSource;
+  status: PracticeScenarioStatus;
+  title: string;
+  subtitle: string | null;
+  description: string | null;
+
+  format_id: string | null;
+  team_id: string | null;
+  team_version_id: string | null;
+
+  battle_id: string | null;
+  turn_number: number | null;
+  user_side: "p1" | "p2" | null;
+
+  tags_json: string;
+  difficulty: number | null;
+
+  attempts: Array<{
+    id: string;
+    created_at: string;
+    rating: PracticeOutcomeRating;
+    summary: string | null;
+  }>;
+
+  snapshot: BackendSnapshot | null;
+};
+
+function dtoToPracticeDetails(dto: PracticeDetailsDto): PracticeScenarioDetails {
+  if (!dto.snapshot) {
+    return {
+      id: dto.id,
+      title: dto.title,
+      description: dto.description ?? dto.subtitle ?? null,
+      source: dto.source,
+      status: dto.status,
+      format_id: dto.format_id ?? null,
+      team_name: null,
+      battle_id: dto.battle_id ?? null,
+      turn_number: dto.turn_number ?? null,
+      tags: parseTagsJson(dto.tags_json),
+
+      user_side: {
+        label: "You",
+        active: {
+          species_name: "Unknown",
+          hp_percent: null,
+          item_name: null,
+          ability_name: null,
+          moves: [],
+        },
+        bench: [],
+      },
+
+      opponent_side: {
+        label: "Opponent",
+        active: {
+          species_name: "Unknown",
+          hp_percent: null,
+          item_name: null,
+          ability_name: null,
+          moves: [],
+        },
+        bench: [],
+      },
+
+      attempts: dto.attempts ?? [],
+    };
+  }
+
+  const snap = dto.snapshot;
+
+  const userSide: "p1" | "p2" = dto.user_side ?? snap.user_side ?? "p1";
+  const oppSide: "p1" | "p2" = userSide === "p1" ? "p2" : "p1";
+
+  // Prefer the “a” slot as the primary active (matches your current right panel shape)
+  const primaryUserPos: SnapshotPosition = userSide === "p1" ? "p1a" : "p2a";
+  const primaryOppPos: SnapshotPosition = oppSide === "p1" ? "p1a" : "p2a";
+
+  const primaryUserActive = snap.actives[primaryUserPos];
+  const primaryOppActive = snap.actives[primaryOppPos];
+
+  const movesForPrimary = snap.legal_moves[primaryUserPos] ?? [];
+
+  // For the current UI, show bench as “legal switches” for the primary position.
+  const benchSwitches = snap.legal_switches[primaryUserPos] ?? [];
+
+  return {
+    id: dto.id,
+    title: dto.title,
+    description: dto.description ?? dto.subtitle ?? null,
+    source: dto.source,
+    status: dto.status,
+    format_id: dto.format_id ?? null,
+    team_name: null,
+    battle_id: dto.battle_id ?? null,
+    turn_number: dto.turn_number ?? null,
+    tags: parseTagsJson(dto.tags_json),
+
+    user_side: {
+      label: "You",
+      active: {
+        species_name: primaryUserActive?.species_name ?? "Unknown",
+        hp_percent: primaryUserActive?.hp_percent ?? null,
+        item_name: null,
+        ability_name: null,
+        moves: movesForPrimary,
+      },
+      bench: benchSwitches.map((s) => ({ species_name: s.species_name, hp_percent: null })),
+    },
+
+    opponent_side: {
+      label: "Opponent",
+      active: {
+        species_name: primaryOppActive?.species_name ?? "Unknown",
+        hp_percent: primaryOppActive?.hp_percent ?? null,
+        item_name: null,
+        ability_name: null,
+        moves: snap.legal_moves[primaryOppPos] ?? [],
+      },
+      bench: (oppSide === "p1" ? snap.bench.p1 : snap.bench.p2).map((b) => ({
+        species_name: b.species_name,
+        hp_percent: b.hp_percent ?? null,
+      })),
+    },
+
+    attempts: dto.attempts ?? [],
+  };
+}
+
 function cx(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
-}
-
-function newId(prefix = "scn") {
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function makeScenarioFromIntent(intent: PracticeScenarioIntent): PracticeScenarioListItem {
-  return {
-    id: newId("scn"),
-    title: `Battle ${intent.battleId} · Turn ${intent.turnNumber}`,
-    subtitle: "Created from Battle Review",
-    source: "battle_review",
-    status: "active",
-    format_id: null,
-    team_name: null,
-    battle_id: intent.battleId,
-    turn_number: intent.turnNumber,
-    tags: ["midgame"],
-    attempts_count: 0,
-    last_practiced_at: null,
-    best_rating: null,
-    difficulty: 2,
-  };
 }
 
 export default function PracticeScenariosPage({
@@ -62,42 +222,42 @@ export default function PracticeScenariosPage({
 
   // Action selection state (Part 1 + increment)
   const [selectedAction, setSelectedAction] = useState<SelectedAction | null>(null);
-
   // Mock data for now (replace with DB later)
-  const [mine, setMine] = useState<PracticeScenarioListItem[]>([
-    {
-      id: "scn-1",
-      title: "Manage the Endgame (Dragonite)",
-      subtitle: "Choose a line that converts advantage without risking a throw.",
-      source: "battle_review",
-      status: "active",
-      format_id: "gen9ou",
-      team_name: "Balance v3",
-      battle_id: "btl-001",
-      turn_number: 18,
-      tags: ["endgame", "risk", "positioning"],
-      attempts_count: 3,
-      last_practiced_at: new Date(Date.now() - 1000 * 60 * 60 * 22).toISOString(),
-      best_rating: "better",
-      difficulty: 2,
-    },
-    {
-      id: "scn-2",
-      title: "Punish Over-switching",
-      subtitle: "Hold tempo by committing to the right midgame line.",
-      source: "battle_review",
-      status: "draft",
-      format_id: "gen9ou",
-      team_name: "HO v1",
-      battle_id: "btl-008",
-      turn_number: 7,
-      tags: ["midgame", "positioning"],
-      attempts_count: 0,
-      last_practiced_at: null,
-      best_rating: null,
-      difficulty: 3,
-    },
-  ]);
+  const [mine, setMine] = useState<PracticeScenarioListItem[]>([]);
+  const [mineLoading, setMineLoading] = useState(false);
+  const [mineError, setMineError] = useState<string | null>(null);
+
+  const [details, setDetails] = useState<PracticeScenarioDetails | null>(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsError, setDetailsError] = useState<string | null>(null);
+
+  type Difficulty = 1 | 2 | 3 | 4 | 5;
+  function normalizeDifficulty(x: number | null | undefined): Difficulty | null {
+    if (x == null) return null;
+    if (x === 1 || x === 2 || x === 3 || x === 4 || x === 5) return x;
+    return null;
+  }
+
+  function rowToListItem(r: PracticeScenarioRow): PracticeScenarioListItem {
+    return {
+      id: r.id,
+      title: r.title,
+      subtitle: r.subtitle ?? null,
+      source: r.source,
+      status: r.status,
+      format_id: r.format_id ?? null,
+      team_name: null, // hydrate later if you add joins
+      battle_id: r.battle_id ?? null,
+      turn_number: r.turn_number ?? null,
+      tags: parseTagsJson(r.tags_json),
+      attempts_count: r.attempts_count ?? 0,
+      last_practiced_at: r.last_practiced_at
+        ? new Date(r.last_practiced_at * 1000).toISOString()
+        : null,
+      best_rating: r.best_rating ?? null,
+      difficulty: normalizeDifficulty(r.difficulty),
+    };
+  }
 
   const recommended: PracticeScenarioListItem[] = useMemo(
     () => [
@@ -136,19 +296,136 @@ export default function PracticeScenariosPage({
     ],
     []
   );
-
+  
   // Consume intent: create scenario + select + switch to "mine"
+  const refreshMine = useCallback(async (preferredId?: string) => {
+    setMineLoading(true);
+    setMineError(null);
+    try {
+      const rows = await PracticeApi.listMyScenarios();
+      const items = rows.map(rowToListItem);
+      setMine(items);
+      setSelectedId((prev) => preferredId ?? prev ?? items[0]?.id ?? null);
+    } catch (e: unknown) {
+      setMineError(e instanceof Error ? e.message : "Failed to load scenarios.");
+    } finally {
+      setMineLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshMine();
+  }, [refreshMine]);
+
+  const consumedIntentRef = useRef<string | null>(null);
   useEffect(() => {
     if (!initialIntent) return;
 
-    const scn = makeScenarioFromIntent(initialIntent);
-    setMine((prev) => [scn, ...prev]);
-    setSelectedId(scn.id);
-    setTab("mine");
-    setSelectedAction(null);
+    const intentKey = `${initialIntent.battleId}::${initialIntent.turnNumber}`;
 
-    onConsumedIntent?.();
-  }, [initialIntent, onConsumedIntent]);
+    // StrictMode guard (dev)
+    if (consumedIntentRef.current === intentKey) {
+      onConsumedIntent?.();
+      return;
+    }
+    consumedIntentRef.current = intentKey;
+
+    (async () => {
+      try {
+        // Source of truth: DB insert (idempotent via UNIQUE index)
+        const row = await PracticeApi.createFromBattleTurn(
+          initialIntent.battleId,
+          initialIntent.turnNumber
+        );
+
+        // Refresh list from DB (prevents local duplicates)
+        await refreshMine(row.id);
+
+        setTab("mine");
+        setSelectedAction(null);
+      } catch (e: unknown) {
+        window.__toast?.(
+          e instanceof Error ? e.message : "Failed to create scenario.",
+          "error"
+        );
+      } finally {
+        onConsumedIntent?.();
+      }
+    })();
+  }, [initialIntent, onConsumedIntent, refreshMine]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      if (!selectedId) {
+        setDetails(null);
+        setDetailsError(null);
+        setDetailsLoading(false);
+        return;
+      }
+
+      setDetailsLoading(true);
+      setDetailsError(null);
+
+      try {
+        const dto = await PracticeApi.getDetails(selectedId);
+        console.log("[renderer] calling getDetails", selectedId);
+        if (cancelled) return;
+
+        if (!dto) {
+          const row = await PracticeApi.getScenario(selectedId);
+          if (cancelled) return;
+
+          if (!row) {
+            setDetails(null);
+            setDetailsError("Scenario not found.");
+            return;
+          }
+
+          setDetails({
+            id: row.id,
+            title: row.title,
+            description: row.subtitle ?? null,
+            source: row.source,
+            status: row.status,
+            format_id: row.format_id ?? null,
+            team_name: null,
+            battle_id: row.battle_id ?? null,
+            turn_number: row.turn_number ?? null,
+            tags: parseTagsJson(row.tags_json),
+            user_side: {
+              label: "You",
+              active: { species_name: "Unknown", hp_percent: null, item_name: null, ability_name: null, moves: [] },
+              bench: [],
+            },
+            opponent_side: {
+              label: "Opponent",
+              active: { species_name: "Unknown", hp_percent: null, item_name: null, ability_name: null, moves: [] },
+              bench: [],
+            },
+            attempts: [],
+          });
+
+          setDetailsError("Snapshot not generated yet (showing basic scenario).");
+          return;
+        }
+
+        // success path
+        setDetails(dtoToPracticeDetails(dto as PracticeDetailsDto));
+      } catch (e: unknown) {
+        if (cancelled) return;
+        setDetails(null);
+        setDetailsError(e instanceof Error ? e.message : "Failed to load scenario details.");
+      } finally {
+        if (!cancelled) setDetailsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
 
   const allItems = tab === "mine" ? mine : recommended;
 
@@ -174,70 +451,6 @@ export default function PracticeScenariosPage({
       return hay.includes(q);
     });
   }, [allItems, query, formatFilter, sourceFilter]);
-
-  const selectedDetails: PracticeScenarioDetails | null = useMemo(() => {
-    if (!selectedId) return null;
-
-    const base = tab === "mine"
-      ? mine.find((x) => x.id === selectedId)
-      : recommended.find((x) => x.id === selectedId);
-
-    if (!base) return null;
-
-    // Minimal mock details to render the right panel.
-    // Later: hydrate from sim state / DB.
-    return {
-      id: base.id,
-      title: base.title,
-      description:
-        base.subtitle ??
-        "Practice this scenario by choosing a move or switch and evaluating the outcome.",
-      source: base.source,
-      status: base.status,
-      format_id: base.format_id ?? null,
-      team_name: base.team_name ?? null,
-      battle_id: base.battle_id ?? null,
-      turn_number: base.turn_number ?? null,
-      tags: base.tags ?? [],
-      user_side: {
-        label: "You",
-        active: {
-          species_name: "Dragonite",
-          hp_percent: 74,
-          item_name: "Heavy-Duty Boots",
-          ability_name: "Multiscale",
-          moves: [
-            { move_name: "Dragon Dance" },
-            { move_name: "Extreme Speed" },
-            { move_name: "Earthquake" },
-            { move_name: "Roost" },
-          ],
-        },
-        bench: [
-          { species_name: "Gholdengo", hp_percent: 33 },
-          { species_name: "Great Tusk", hp_percent: 81 },
-          { species_name: "Rotom-W", hp_percent: 59 },
-        ],
-      },
-      opponent_side: {
-        label: "Opponent",
-        active: {
-          species_name: "Kingambit",
-          hp_percent: 62,
-          item_name: "Black Glasses",
-          ability_name: "Supreme Overlord",
-          moves: [
-            { move_name: "Kowtow Cleave", disabled: true, hint: "Hidden to MVP" },
-            { move_name: "Sucker Punch", disabled: true, hint: "Hidden to MVP" },
-            { move_name: "Iron Head", disabled: true, hint: "Hidden to MVP" },
-            { move_name: "Swords Dance", disabled: true, hint: "Hidden to MVP" },
-          ],
-        },
-        bench: [{ species_name: "Great Tusk", hp_percent: 40 }],
-      },
-      attempts: [],
-    };
-  }, [mine, recommended, selectedId, tab]);
 
   const headerStats: PracticeHeaderStats = useMemo(() => {
     const items = mine;
@@ -296,13 +509,9 @@ export default function PracticeScenariosPage({
   }
 
   function handleRunOutcome() {
-    if (!selectedAction || !selectedDetails) return;
-    // MVP: no sim yet; keep logging for now.
-    console.log("Run outcome", {
-      scenarioId: selectedDetails.id,
-      action: selectedAction,
-    });
-  }
+  if (!selectedAction || !details) return;
+  console.log("Run outcome", { scenarioId: details.id, action: selectedAction });
+}
 
   return (
     <div className="w-full p-6 h-full">
@@ -313,6 +522,8 @@ export default function PracticeScenariosPage({
           onQueryChange={setQuery}
           onNewScenario={handleNewScenario}
         />
+        {mineLoading ? <div className="text-sm text-black/50">Loading scenarios…</div> : null}
+        {mineError ? <div className="text-sm text-red-600">{mineError}</div> : null}
 
         <div className="flex flex-wrap items-center justify-between gap-3">
           <SegmentedTabs tab={tab} onChange={(k) => {
@@ -356,8 +567,10 @@ export default function PracticeScenariosPage({
             </div>
 
             <div className="lg:col-span-7 h-full min-h-0">
+              {detailsLoading ? <div className="text-sm text-black/50">Loading scenario…</div> : null}
+              {detailsError ? <div className="text-sm text-red-600">{detailsError}</div> : null}
               <PracticeScenarioDetailsPanel
-                details={selectedDetails}
+                details={details}
                 selectedAction={selectedAction}
                 onSelectMove={handleSelectMove}
                 onSelectSwitch={handleSelectSwitch}

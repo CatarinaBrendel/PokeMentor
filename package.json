@@ -12,6 +12,8 @@
     "gen:species-index": "node scripts/generate-species-index.mjs"
   },
   "dependencies": {
+    "@pkmn/dex": "^0.10.4",
+    "@pkmn/sim": "^0.10.4",
     "better-sqlite3": "^12.5.0",
     "lucide-react": "^0.561.0",
     "react": "^18.2.0",

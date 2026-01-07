@@ -1,4 +1,5 @@
 import { BattleDetailsDto } from "../../features/battles/model/battles.types";
+import type { BattleListItem } from "../../features/battles/model/battles.types";
 import type {
   ActiveTeamActivity,
   DeleteTeamResult,
@@ -7,6 +8,8 @@ import type {
 } from "../../features/teams/model/teams.types";
 import type { TeamListRow } from "../../features/teams/ui/TeamsView";
 import type { DashboardKpis } from "../../features/dashboard/model/dashboard.types";
+import type { PracticeScenarioRow, CreatePracticeScenarioFromBattleTurnArgs } from "../../features/practice/model/practice.api.types";
+import type { PracticeScenarioDetails } from "../../features/practice/model/practice.types";
 
 export {};
 
@@ -58,6 +61,44 @@ type EvTrainingRecipe = {
   notes?: string[];
 };
 
+type PracticeScenarioRow = {
+  id: string;
+  source: "battle_review" | "team_drill" | "curated" | "manual";
+  status: "active" | "draft" | "archived";
+
+  title: string;
+  subtitle: string | null;
+  description?: string | null;
+
+  format_id: string | null;
+  team_id: string | null;
+  team_version_id: string | null;
+
+  battle_id: string | null;
+  turn_number: number | null;
+  user_side?: "p1" | "p2" | null;
+
+  tags_json: string;
+  difficulty: number | null;
+
+  attempts_count: number;
+  last_practiced_at: number | null;
+  best_rating: "worse" | "neutral" | "better" | null;
+
+  // optional fields may exist depending on your SELECT *
+  snapshot_json?: string;
+  snapshot_hash?: string | null;
+  snapshot_created_at?: number | null;
+
+  created_at?: number;
+  updated_at?: number;
+};
+
+type CreatePracticeScenarioFromBattleTurnArgs = {
+  battle_id: string;
+  turn_number: number;
+};
+
 declare global {
   interface Window {
     __toast?: (message: string, type: "success" | "error") => void,
@@ -81,7 +122,7 @@ declare global {
       };
       battles: {
         importReplays: (args: ImportReplaysArgs) => Promise<ImportReplaysResult>;
-        list: (args?: { limit?: number; offset?: number }) => Promise<any>;
+        list: (args?: { limit?: number; offset?: number }) => Promise<BattleListItem[]>;
         getDetails: (battleID: string) => Promise<BattleDetailsDto>
       };
       settings: {
@@ -108,6 +149,14 @@ declare global {
       };
       dashboard: {
         getKpis: () => Promise<DashboardKpis>;
+      };
+      practice: {
+        listMyScenarios: () => Promise<PracticeScenarioRow[]>;
+        createFromBattleTurn: (
+          args: CreatePracticeScenarioFromBattleTurnArgs
+        ) => Promise<PracticeScenarioRow>;
+        getScenario: (id: string) => Promise<PracticeScenarioRow | null>;
+        getDetails: (id: string) => Promise<PracticeScenarioDetails>
       };
     };
   }

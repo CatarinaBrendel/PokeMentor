@@ -5,6 +5,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import crypto, { randomUUID } from "node:crypto";
+import { randomUUID as randomUUID$1 } from "crypto";
 const require$1 = createRequire(import.meta.url);
 const Database = require$1("better-sqlite3");
 let db = null;
@@ -2815,6 +2816,490 @@ function dashboardRepo(db2) {
   }
   return { getKpis };
 }
+function hpTextToPercent(hp_text) {
+  if (!hp_text) return null;
+  if (hp_text.includes("fnt")) return 0;
+  const m = hp_text.match(/(\d+)\s*\/\s*(\d+)/);
+  if (!m) return null;
+  const cur = Number(m[1]);
+  const max = Number(m[2]);
+  if (!Number.isFinite(cur) || !Number.isFinite(max) || max <= 0) return null;
+  return Math.max(0, Math.min(100, Math.round(cur / max * 100)));
+}
+function positionsForSide(side) {
+  return side === "p1" ? ["p1a", "p1b"] : ["p2a", "p2b"];
+}
+function PracticeDecisionSnapshotService(db2) {
+  function getTurnStartEventIndex(battleId, turnNumber) {
+    const row = db2.prepare(
+      `
+        SELECT event_index AS idx
+        FROM battle_events
+        WHERE battle_id = ?
+          AND line_type = 'turn'
+          AND turn_num = ?
+        ORDER BY event_index ASC
+        LIMIT 1
+        `
+    ).get(battleId, turnNumber);
+    return (row == null ? void 0 : row.idx) ?? null;
+  }
+  function getLatestSwitchAtOrBefore(battleId, pos, eventIndex) {
+    const row = db2.prepare(
+      `
+        SELECT
+          s.position,
+          i.species_name,
+          s.hp_text
+        FROM battle_switches s
+        JOIN battle_pokemon_instances i
+          ON i.id = s.pokemon_instance_id
+        WHERE s.battle_id = ?
+          AND s.position = ?
+          AND s.event_index <= ?
+        ORDER BY s.event_index DESC
+        LIMIT 1
+        `
+    ).get(battleId, pos, eventIndex);
+    return row ?? null;
+  }
+  function listPreviewRoster(battleId, side) {
+    const rows = db2.prepare(
+      `
+        SELECT species_name
+        FROM battle_preview_pokemon
+        WHERE battle_id = ?
+          AND side = ?
+        ORDER BY slot_index ASC
+        `
+    ).all(battleId, side);
+    return rows.map((r) => r.species_name);
+  }
+  function getRevealedMovesMap(battleId, side) {
+    const rows = db2.prepare(
+      `
+        SELECT species_name, moves_json
+        FROM battle_revealed_sets
+        WHERE battle_id = ?
+          AND side = ?
+        `
+    ).all(battleId, side);
+    const map = /* @__PURE__ */ new Map();
+    for (const r of rows) {
+      try {
+        const arr = JSON.parse(r.moves_json);
+        if (Array.isArray(arr)) {
+          map.set(
+            r.species_name,
+            arr.filter((x) => typeof x === "string")
+          );
+        }
+      } catch {
+      }
+    }
+    return map;
+  }
+  function buildDecisionSnapshot(args) {
+    const turnStartIdx = getTurnStartEventIndex(args.battleId, args.turnNumber);
+    const idx = turnStartIdx ?? 9999999999;
+    const oppSide = args.userSide === "p1" ? "p2" : "p1";
+    const userPositions = positionsForSide(args.userSide);
+    const oppPositions = positionsForSide(oppSide);
+    const userActiveRaw = userPositions.map((p) => getLatestSwitchAtOrBefore(args.battleId, p, idx)).filter(Boolean);
+    const oppActiveRaw = oppPositions.map((p) => getLatestSwitchAtOrBefore(args.battleId, p, idx)).filter(Boolean);
+    const user_active = userActiveRaw.map((r) => ({
+      position: r.position,
+      species_name: r.species_name,
+      hp_percent: hpTextToPercent(r.hp_text)
+    }));
+    const opp_active = oppActiveRaw.map((r) => ({
+      position: r.position,
+      species_name: r.species_name,
+      hp_percent: hpTextToPercent(r.hp_text)
+    }));
+    const userRoster = listPreviewRoster(args.battleId, args.userSide);
+    const oppRoster = listPreviewRoster(args.battleId, oppSide);
+    const userActiveSpecies = new Set(user_active.map((x) => x.species_name));
+    const oppActiveSpecies = new Set(opp_active.map((x) => x.species_name));
+    const user_bench = userRoster.filter((s) => !userActiveSpecies.has(s)).map((s) => ({ species_name: s, hp_percent: null }));
+    const opp_bench = oppRoster.filter((s) => !oppActiveSpecies.has(s)).map((s) => ({ species_name: s, hp_percent: null }));
+    const movesMap = getRevealedMovesMap(args.battleId, args.userSide);
+    const legal_moves = user_active.map((a) => ({
+      position: a.position,
+      moves: (movesMap.get(a.species_name) ?? []).map((m) => ({ move_name: m }))
+    }));
+    const legal_switches = userPositions.map((pos) => ({
+      position: pos,
+      switches: user_bench.map((b) => ({ species_name: b.species_name }))
+    }));
+    return {
+      turn_number: args.turnNumber,
+      user_side: args.userSide,
+      opponent_side: oppSide,
+      user_active,
+      opp_active,
+      user_bench,
+      opp_bench,
+      legal_moves,
+      legal_switches
+    };
+  }
+  return { buildDecisionSnapshot };
+}
+function isEmptySnapshotJson(s) {
+  if (!s) return true;
+  const t = s.trim();
+  return t === "" || t === "{}" || t === "null";
+}
+function practiceScenariosRepo(db2) {
+  function inferUserSideFromBattle(battleId) {
+    const row = db2.prepare(
+      `
+        SELECT side
+        FROM battle_sides
+        WHERE battle_id = ? AND is_user = 1
+        LIMIT 1
+        `
+    ).get(battleId);
+    return (row == null ? void 0 : row.side) ?? null;
+  }
+  function updateUserSide(args) {
+    db2.prepare(
+      `
+      UPDATE practice_scenarios
+      SET user_side = ?, updated_at = ?
+      WHERE id = ?
+      `
+    ).run(args.user_side, args.updated_at, args.id);
+  }
+  const snapSvc = PracticeDecisionSnapshotService(db2);
+  function listMyScenarios() {
+    return db2.prepare(
+      `
+        SELECT *
+        FROM practice_scenarios
+        WHERE status <> 'archived'
+        ORDER BY
+          COALESCE(last_practiced_at, created_at) DESC
+        `
+    ).all();
+  }
+  function getScenarioById(id) {
+    return db2.prepare(`SELECT * FROM practice_scenarios WHERE id = ?`).get(id) ?? null;
+  }
+  function updateSnapshot(args) {
+    db2.prepare(
+      `
+      UPDATE practice_scenarios
+      SET
+        snapshot_json = ?,
+        snapshot_hash = ?,
+        snapshot_created_at = ?,
+        updated_at = ?
+      WHERE id = ?
+      `
+    ).run(
+      args.snapshot_json,
+      args.snapshot_hash,
+      args.snapshot_created_at,
+      args.updated_at,
+      args.id
+    );
+  }
+  function computeSnapshotHash(s) {
+    if (!s.battle_id || !s.turn_number || !s.user_side) return null;
+    return `battle:${s.battle_id}::turn:${s.turn_number}::side:${s.user_side}::v1`;
+  }
+  function ensureDecisionSnapshot(s) {
+    var _a;
+    const hash = computeSnapshotHash(s);
+    console.log("[ensureDecisionSnapshot]", {
+      id: s.id,
+      battle_id: s.battle_id,
+      turn_number: s.turn_number,
+      user_side: s.user_side,
+      hash,
+      snap_len: ((_a = s.snapshot_json) == null ? void 0 : _a.length) ?? null,
+      snapshot_hash: s.snapshot_hash,
+      snapshot_created_at: s.snapshot_created_at
+    });
+    if (!hash) return null;
+    const cachedOk = s.snapshot_hash === hash && !isEmptySnapshotJson(s.snapshot_json) && s.snapshot_created_at != null;
+    if (cachedOk) {
+      return { snapshot_json: s.snapshot_json, snapshot_hash: hash };
+    }
+    const snapshot = snapSvc.buildDecisionSnapshot({
+      battleId: s.battle_id,
+      turnNumber: s.turn_number,
+      userSide: s.user_side
+    });
+    console.log("[buildDecisionSnapshot result keys]", Object.keys(snapshot ?? {}));
+    const now = Math.floor(Date.now() / 1e3);
+    const snapshot_json = JSON.stringify(snapshot);
+    updateSnapshot({
+      id: s.id,
+      snapshot_json,
+      snapshot_hash: hash,
+      snapshot_created_at: now,
+      updated_at: now
+    });
+    return { snapshot_json, snapshot_hash: hash };
+  }
+  function insertFromBattleTurn(args) {
+    const now = Math.floor(Date.now() / 1e3);
+    const id = randomUUID$1();
+    const title = args.title ?? `Battle ${args.battle_id} · Turn ${args.turn_number}`;
+    const user_side = inferUserSideFromBattle(args.battle_id);
+    if (!user_side) {
+      throw new Error(
+        `Cannot infer user_side for battle ${args.battle_id}. Expected battle_sides row with is_user = 1.`
+      );
+    }
+    db2.prepare(
+      `
+      INSERT OR IGNORE INTO practice_scenarios (
+        id,
+        source,
+        status,
+        title,
+        subtitle,
+        battle_id,
+        turn_number,
+        user_side,
+        tags_json,
+        attempts_count,
+        created_at,
+        updated_at
+      ) VALUES (
+        ?, 'battle_review', 'active', ?, 'Created from Battle Review',
+        ?, ?, ?,
+        '[]', 0, ?, ?
+      )
+      `
+    ).run(id, title, args.battle_id, args.turn_number, user_side, now, now);
+    const row = db2.prepare(
+      `
+        SELECT *
+        FROM practice_scenarios
+        WHERE source = 'battle_review'
+          AND battle_id = ?
+          AND turn_number = ?
+        `
+    ).get(args.battle_id, args.turn_number);
+    if (row.battle_id && row.turn_number && row.user_side) {
+      ensureDecisionSnapshot(row);
+    }
+    const fresh = getScenarioById(row.id);
+    return fresh ?? row;
+  }
+  function getDetails(id) {
+    let s = getScenarioById(id);
+    if (!s) return null;
+    if (s.battle_id && s.turn_number && !s.user_side) {
+      const inferred = inferUserSideFromBattle(s.battle_id);
+      if (inferred) {
+        const now = Math.floor(Date.now() / 1e3);
+        updateUserSide({ id: s.id, user_side: inferred, updated_at: now });
+        s = getScenarioById(id) ?? s;
+      }
+    }
+    const ensured = ensureDecisionSnapshot(s);
+    const snapJson = (ensured == null ? void 0 : ensured.snapshot_json) ?? s.snapshot_json;
+    let snapshot = {};
+    try {
+      snapshot = snapJson ? JSON.parse(snapJson) : {};
+    } catch {
+      snapshot = {};
+    }
+    return {
+      id: s.id,
+      source: s.source,
+      status: s.status,
+      title: s.title,
+      subtitle: s.subtitle,
+      description: s.description,
+      format_id: s.format_id,
+      team_id: s.team_id,
+      team_version_id: s.team_version_id,
+      battle_id: s.battle_id,
+      turn_number: s.turn_number,
+      user_side: s.user_side,
+      tags_json: s.tags_json,
+      difficulty: s.difficulty,
+      attempts_count: s.attempts_count,
+      last_practiced_at: s.last_practiced_at,
+      best_rating: s.best_rating,
+      snapshot
+    };
+  }
+  return {
+    listMyScenarios,
+    getScenarioById,
+    insertFromBattleTurn,
+    getDetails
+  };
+}
+function parseJsonArray(s, fallback = []) {
+  if (!s) return fallback;
+  try {
+    const x = JSON.parse(s);
+    return Array.isArray(x) ? x : fallback;
+  } catch {
+    return fallback;
+  }
+}
+function inferGameType(rawLog) {
+  return rawLog.includes("|gametype|doubles") ? "doubles" : "singles";
+}
+function parseActivesAtTurn(rawLog, decisionTurn) {
+  var _a, _b;
+  const actives = { p1a: null, p1b: null, p2a: null, p2b: null };
+  const lines = rawLog.split("\n");
+  for (const line of lines) {
+    if (!line.startsWith("|")) continue;
+    if (line.startsWith("|turn|")) {
+      const n = Number(line.split("|")[2]);
+      if (Number.isFinite(n) && n === decisionTurn) break;
+    }
+    if (line.startsWith("|switch|") || line.startsWith("|drag|")) {
+      const parts = line.split("|");
+      const who = parts[2] ?? "";
+      const details = parts[3] ?? "";
+      const pos = (_a = who.split(":")[0]) == null ? void 0 : _a.trim();
+      if (pos !== "p1a" && pos !== "p1b" && pos !== "p2a" && pos !== "p2b") continue;
+      const species = (_b = details.split(",")[0]) == null ? void 0 : _b.trim();
+      if (species) actives[pos] = species;
+    }
+  }
+  return actives;
+}
+function practiceDetailsService(db2) {
+  function getDetails(id) {
+    const scn = db2.prepare(`SELECT * FROM practice_scenarios WHERE id = ?`).get(id);
+    if (!scn) return null;
+    const tags = parseJsonArray(scn.tags_json, []);
+    const attemptsRows = db2.prepare(
+      `
+        SELECT id, created_at, rating, summary
+        FROM practice_attempts
+        WHERE scenario_id = ?
+        ORDER BY created_at DESC
+        LIMIT 50
+        `
+    ).all(id);
+    const attempts = attemptsRows.map((a) => ({
+      id: a.id,
+      created_at: new Date(a.created_at * 1e3).toISOString(),
+      rating: a.rating ?? null,
+      summary: a.summary ?? null
+    }));
+    if (!scn.battle_id || !scn.turn_number) {
+      return {
+        id: scn.id,
+        title: scn.title,
+        description: scn.description ?? scn.subtitle ?? null,
+        source: scn.source,
+        status: scn.status,
+        format_id: scn.format_id ?? null,
+        team_name: null,
+        battle_id: scn.battle_id ?? null,
+        turn_number: scn.turn_number ?? null,
+        tags,
+        attempts,
+        snapshot: {
+          game_type: "singles",
+          user_side: scn.user_side ?? null,
+          actives: { p1a: null, p1b: null, p2a: null, p2b: null },
+          bench: { p1: [], p2: [] },
+          legal_moves: { p1a: [], p1b: [], p2a: [], p2b: [] },
+          legal_switches: { p1a: [], p1b: [], p2a: [], p2b: [] }
+        }
+      };
+    }
+    const battleRow = db2.prepare(`SELECT raw_log FROM battles WHERE id = ?`).get(scn.battle_id);
+    const rawLog = (battleRow == null ? void 0 : battleRow.raw_log) ?? "";
+    const gameType = inferGameType(rawLog);
+    const activeSpeciesByPos = parseActivesAtTurn(rawLog, scn.turn_number);
+    const actives = {
+      p1a: activeSpeciesByPos.p1a ? { species_name: activeSpeciesByPos.p1a, hp_percent: null } : null,
+      p1b: activeSpeciesByPos.p1b ? { species_name: activeSpeciesByPos.p1b, hp_percent: null } : null,
+      p2a: activeSpeciesByPos.p2a ? { species_name: activeSpeciesByPos.p2a, hp_percent: null } : null,
+      p2b: activeSpeciesByPos.p2b ? { species_name: activeSpeciesByPos.p2b, hp_percent: null } : null
+    };
+    const preview = db2.prepare(
+      `
+        SELECT side, slot_index, species_name
+        FROM battle_preview_pokemon
+        WHERE battle_id = ?
+        ORDER BY side, slot_index
+        `
+    ).all(scn.battle_id);
+    const rosterBySide = { p1: [], p2: [] };
+    for (const r of preview) rosterBySide[r.side].push(r.species_name);
+    const activeSet = new Set(
+      Object.values(activeSpeciesByPos).filter((x) => Boolean(x))
+    );
+    const bench = {
+      p1: rosterBySide.p1.filter((s) => !activeSet.has(s)).map((s) => ({ species_name: s, hp_percent: null })),
+      p2: rosterBySide.p2.filter((s) => !activeSet.has(s)).map((s) => ({ species_name: s, hp_percent: null }))
+    };
+    const battleId = scn.battle_id;
+    function revealedMoves(side, species) {
+      if (!species) return [];
+      const row = db2.prepare(
+        `
+          SELECT moves_json
+          FROM battle_revealed_sets
+          WHERE battle_id = ? AND side = ? AND species_name = ?
+          `
+      ).get(battleId, side, species);
+      const moves = parseJsonArray(row == null ? void 0 : row.moves_json, []);
+      return moves.map((m) => ({ move_name: m }));
+    }
+    const legal_moves = {
+      p1a: revealedMoves("p1", activeSpeciesByPos.p1a),
+      p1b: revealedMoves("p1", activeSpeciesByPos.p1b),
+      p2a: revealedMoves("p2", activeSpeciesByPos.p2a),
+      p2b: revealedMoves("p2", activeSpeciesByPos.p2b)
+    };
+    const legal_switches = {
+      p1a: bench.p1.map((b) => ({ species_name: b.species_name })),
+      p1b: bench.p1.map((b) => ({ species_name: b.species_name })),
+      p2a: bench.p2.map((b) => ({ species_name: b.species_name })),
+      p2b: bench.p2.map((b) => ({ species_name: b.species_name }))
+    };
+    if (gameType === "singles") {
+      actives.p1b = null;
+      actives.p2b = null;
+      legal_moves.p1b = [];
+      legal_moves.p2b = [];
+      legal_switches.p1b = [];
+      legal_switches.p2b = [];
+    }
+    return {
+      id: scn.id,
+      title: scn.title,
+      description: scn.description ?? scn.subtitle ?? null,
+      source: scn.source,
+      status: scn.status,
+      format_id: scn.format_id ?? null,
+      team_name: null,
+      battle_id: scn.battle_id,
+      turn_number: scn.turn_number,
+      tags,
+      attempts,
+      snapshot: {
+        game_type: gameType,
+        user_side: scn.user_side ?? null,
+        actives,
+        bench,
+        legal_moves,
+        legal_switches
+      }
+    };
+  }
+  return { getDetails };
+}
 function registerDbHandlers() {
   const db2 = getDb();
   const teams = teamsRepo(db2);
@@ -2909,6 +3394,26 @@ function registerDbHandlers() {
   const dashboard = dashboardRepo(db2);
   ipcMain.handle("db:dashboard:getKpis", async () => {
     return dashboard.getKpis();
+  });
+  const practice = practiceScenariosRepo(db2);
+  ipcMain.handle("db:practice:listMyScenarios", async () => {
+    return practice.listMyScenarios();
+  });
+  ipcMain.handle(
+    "db:practice:createFromBattleTurn",
+    async (_ev, args) => {
+      return practice.insertFromBattleTurn(args);
+    }
+  );
+  ipcMain.handle(
+    "db:practice:getScenario",
+    async (_ev, id) => {
+      return practice.getScenarioById(id);
+    }
+  );
+  const practiceDetails = practiceDetailsService(db2);
+  ipcMain.handle("db:practice:getDetails", async (_ev, id) => {
+    return practiceDetails.getDetails(id);
   });
 }
 const __filename$1 = fileURLToPath(import.meta.url);

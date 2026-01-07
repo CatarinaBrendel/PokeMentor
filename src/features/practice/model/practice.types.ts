@@ -1,13 +1,9 @@
 // src/features/practice/model/practice.types.ts
 
 export type PracticeTabKey = "mine" | "recommended";
-
 export type PracticeScenarioSource = "battle_review" | "team_drill" | "curated";
-
 export type PracticeScenarioStatus = "draft" | "active" | "archived";
-
 export type PracticeOutcomeRating = "better" | "neutral" | "worse" | "unknown";
-
 export type PracticeScenarioTag =
   | "lead"
   | "midgame"
@@ -17,6 +13,33 @@ export type PracticeScenarioTag =
   | "damage"
   | "resource"
   | "speed_control";
+
+export type PracticeScenarioRow = {
+  id: string;
+  source: PracticeScenarioSource;
+  status: PracticeScenarioStatus;
+  title: string;
+  subtitle: string | null;
+
+  format_id: string | null;
+  team_id: string | null;
+  team_version_id: string | null;
+
+  battle_id: string | null;
+  turn_number: number | null;
+
+  tags_json: string;
+  difficulty: number | null;
+
+  attempts_count: number;
+  last_practiced_at: number | null;
+  best_rating: PracticeOutcomeRating | null;
+};
+
+export type CreatePracticeScenarioFromBattleTurnArgs = {
+  battle_id: string;
+  turn_number: number;
+};
 
 /**
  * Lightweight list item used for the left panel list.

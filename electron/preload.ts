@@ -1,5 +1,6 @@
 import { ipcRenderer, contextBridge } from 'electron'
 import { TeamListRow } from './db/queries/teams/teams.types'
+import { PracticeScenarioRow } from './db/queries/practice/repo/practiceScenariosRepo';
 
 export type ImportBattlesResult = {
   okCount: number;
@@ -89,4 +90,16 @@ contextBridge.exposeInMainWorld("api", {
   dashboard: {
     getKpis: () => ipcRenderer.invoke("db:dashboard:getKpis"),
   },
+  practice: {
+    listMyScenarios: () =>
+    ipcRenderer.invoke("db:practice:listMyScenarios") as Promise<PracticeScenarioRow[]>,
+
+    createFromBattleTurn: (args: { battle_id: string; turn_number: number }) =>
+      ipcRenderer.invoke("db:practice:createFromBattleTurn", args) as Promise<PracticeScenarioRow>,
+
+    getScenario: (id: string) =>
+      ipcRenderer.invoke("db:practice:getScenario", id) as Promise<PracticeScenarioRow | null>,
+    
+    getDetails: (id: string) => ipcRenderer.invoke("db:practice:getDetails", id),
+  },        
 });

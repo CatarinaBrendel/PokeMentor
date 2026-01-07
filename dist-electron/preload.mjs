@@ -45,5 +45,11 @@ electron.contextBridge.exposeInMainWorld("api", {
   },
   dashboard: {
     getKpis: () => electron.ipcRenderer.invoke("db:dashboard:getKpis")
+  },
+  practice: {
+    listMyScenarios: () => electron.ipcRenderer.invoke("db:practice:listMyScenarios"),
+    createFromBattleTurn: (args) => electron.ipcRenderer.invoke("db:practice:createFromBattleTurn", args),
+    getScenario: (id) => electron.ipcRenderer.invoke("db:practice:getScenario", id),
+    getDetails: (id) => electron.ipcRenderer.invoke("db:practice:getDetails", id)
   }
 });

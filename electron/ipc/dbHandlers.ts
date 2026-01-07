@@ -26,7 +26,12 @@ import { getEvTrainingRecipe } from "../ai/openrouter";
 // Dashboard
 // -----------------------------
 import { dashboardRepo } from "../db/queries/dashboard/repo/dashboardRepo";
-import { teamVersionsRepo } from "../db/queries/teams/repo/teamVersions.repo";
+
+// -----------------------------
+// Practice
+// -----------------------------
+import { practiceScenariosRepo } from "../db/queries/practice/repo/practiceScenariosRepo";
+import { practiceDetailsService } from "../db/queries/practice/services/PracticeDetailsService";
 
 /**
  * Centralized registration of DB-backed IPC handlers.
@@ -150,8 +155,32 @@ export function registerDbHandlers() {
 
   // Dashbaord
   const dashboard = dashboardRepo(db);
-
   ipcMain.handle("db:dashboard:getKpis", async () => {
     return dashboard.getKpis();
+  });
+
+  // Practice
+  const practice = practiceScenariosRepo(db);
+  ipcMain.handle("db:practice:listMyScenarios", async () => {
+    return practice.listMyScenarios();
+  });
+
+  ipcMain.handle(
+    "db:practice:createFromBattleTurn",
+    async (_ev, args: { battle_id: string; turn_number: number }) => {
+      return practice.insertFromBattleTurn(args);
+    }
+  );
+
+  ipcMain.handle(
+    "db:practice:getScenario",
+    async (_ev, id: string) => {
+      return practice.getScenarioById(id);
+    }
+  );
+
+  const practiceDetails = practiceDetailsService(db);
+  ipcMain.handle("db:practice:getDetails", async (_ev, id: string) => {
+    return practiceDetails.getDetails(id);
   });
 }
