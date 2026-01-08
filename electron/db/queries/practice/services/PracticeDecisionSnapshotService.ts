@@ -14,10 +14,17 @@ export type PracticeDecisionSnapshot = {
   user_bench: Array<{ species_name: string; hp_percent: number | null }>;
   opp_bench: Array<{ species_name: string; hp_percent: number | null }>;
 
-  // “Legal” here is approximation (revealed moves + non-fainted bench); later @pkmn/sim will refine it.
+  // Approximation for MVP: revealed moves + preview bench. (@pkmn/sim can refine later.)
   legal_moves: Array<{ position: PracticePosition; moves: Array<{ move_name: string }> }>;
   legal_switches: Array<{ position: PracticePosition; switches: Array<{ species_name: string }> }>;
 };
+
+const ALL_POSITIONS = ["p1", "p1a", "p1b", "p2", "p2a", "p2b"] as const;
+type ParsedPosition = typeof ALL_POSITIONS[number];
+
+function isParsedPosition(x: string): x is ParsedPosition {
+  return (ALL_POSITIONS as readonly string[]).includes(x);
+}
 
 function hpTextToPercent(hp_text: string | null | undefined): number | null {
   if (!hp_text) return null;
@@ -33,6 +40,15 @@ function hpTextToPercent(hp_text: string | null | undefined): number | null {
 
 function positionsForSide(side: PracticeSide): PracticePosition[] {
   return side === "p1" ? ["p1a", "p1b"] : ["p2a", "p2b"];
+}
+
+function positionAliases(pos: PracticePosition): readonly ParsedPosition[] {
+  // Doubles typical: p1a/p1b/p2a/p2b
+  // Singles common: p1/p2
+  if (pos === "p1a") return ["p1a", "p1"];
+  if (pos === "p2a") return ["p2a", "p2"];
+  // For "b" slots, there is no good singles alias; keep only itself.
+  return [pos];
 }
 
 export function PracticeDecisionSnapshotService(db: SqliteDatabase) {
@@ -54,29 +70,110 @@ export function PracticeDecisionSnapshotService(db: SqliteDatabase) {
     return row?.idx ?? null;
   }
 
+  function parseSwitchLikeLine(
+    raw_line: string
+  ): { position: string; species_name: string; hp_text: string | null } | null {
+    // Expected (Showdown):
+    // |switch|p1a: Dragonite|Dragonite, M|84/100
+    // |drag|p2a: Gholdengo|Gholdengo|100/100
+    // |replace|p1a: Zoroark|Zoroark|100/100
+    // Some stores may preserve an extra leading "|" ("||switch|..."). Be tolerant.
+
+    const line = String(raw_line ?? "").trim();
+    if (!line.includes("|switch|") && !line.includes("|drag|") && !line.includes("|replace|")) return null;
+
+    // Normalize leading pipes: "||switch|" -> "|switch|"
+    const normalized = line.replace(/^\|+/, "|");
+
+    // Split and drop any leading empty segments caused by starting '|'
+    const parts = normalized.split("|").filter((p, idx) => !(idx === 0 && p === ""));
+    // After filtering, expected shapes include:
+    // ["switch", "p1a: Garchomp", "Garchomp, L50, M", "100/100"]
+    // ["drag",   "p2a: X",        "X",             "100/100"]
+
+    const kind = parts[0];
+    if (kind !== "switch" && kind !== "drag" && kind !== "replace") return null;
+
+    const actor = (parts[1] ?? "").trim();
+    // actor like: "p1a: Garchomp" (or "p1: Dragonite" in singles)
+    const m = actor.match(/^(p[12](?:a|b)?):\s*(.+)$/);
+    if (!m) return null;
+
+    const position = m[1];
+
+    // Prefer the post-colon name (often species in your data),
+    // but if that is empty, fall back to the next token.
+    const species_name = (m[2] ?? "").trim() || (parts[2] ?? "").trim();
+    if (!species_name) return null;
+
+    // HP text is typically the last token and looks like "84/100" or "0 fnt".
+    // In some cases there may be extra details tokens; taking the last is most robust.
+    const last = (parts.length > 0 ? parts[parts.length - 1] : "").trim();
+    const hp_text = last && (last.includes("/") || last.includes("fnt")) ? last : null;
+
+    return { position, species_name, hp_text };
+  }
+
   function getLatestSwitchAtOrBefore(battleId: string, pos: PracticePosition, eventIndex: number) {
-    const row = db
+    // IMPORTANT: the current ingest pipeline does not populate `battle_switches`.
+    // Derive current actives directly from `battle_events.raw_line`.
+
+    const aliases = positionAliases(pos);
+
+    // Pull recent switch/drag/replace lines up to the cutoff index.
+    // We scan in JS so we can support multiple aliases per slot (p1 vs p1a etc.).
+    const rows = db
       .prepare(
         `
-        SELECT
-          s.position,
-          i.species_name,
-          s.hp_text
-        FROM battle_switches s
-        JOIN battle_pokemon_instances i
-          ON i.id = s.pokemon_instance_id
-        WHERE s.battle_id = ?
-          AND s.position = ?
-          AND s.event_index <= ?
-        ORDER BY s.event_index DESC
-        LIMIT 1
+        SELECT event_index, raw_line
+        FROM battle_events
+        WHERE battle_id = ?
+          AND event_index <= ?
+          AND raw_line IS NOT NULL
+          AND (
+            raw_line LIKE '|switch|%'
+            OR raw_line LIKE '||switch|%'
+            OR raw_line LIKE '|drag|%'
+            OR raw_line LIKE '||drag|%'
+            OR raw_line LIKE '|replace|%'
+            OR raw_line LIKE '||replace|%'
+          )
+        ORDER BY event_index DESC
+        LIMIT 2000
         `
       )
-      .get(battleId, pos, eventIndex) as
-      | { position: PracticePosition; species_name: string; hp_text: string | null }
-      | undefined;
+      .all(battleId, eventIndex) as Array<{ event_index: number; raw_line: string }>;
 
-    return row ?? null;
+    for (const r of rows) {
+      const parsed = parseSwitchLikeLine(r.raw_line);
+      if (!parsed) continue;
+
+      // Match any alias to this slot (e.g. p1a matches p1 too)
+      if (!isParsedPosition(parsed.position)) continue;
+if (!aliases.includes(parsed.position)) continue;
+
+      // Helpful when diagnosing empty actives.
+      // Comment out later once confirmed.
+      // eslint-disable-next-line no-console
+      console.log("[snapshot] matched switch", {
+        battleId,
+        cutoff: eventIndex,
+        wanted: pos,
+        aliases,
+        event_index: r.event_index,
+        position: parsed.position,
+        species_name: parsed.species_name,
+        hp_text: parsed.hp_text,
+      });
+
+      return {
+        position: pos,
+        species_name: parsed.species_name,
+        hp_text: parsed.hp_text,
+      };
+    }
+
+    return null;
   }
 
   function listPreviewRoster(battleId: string, side: PracticeSide): string[] {
@@ -188,6 +285,18 @@ export function PracticeDecisionSnapshotService(db: SqliteDatabase) {
       position: pos,
       switches: user_bench.map((b) => ({ species_name: b.species_name })),
     }));
+
+    if (user_active.length === 0 || opp_active.length === 0) {
+      console.log("[snapshot] empty actives", {
+        battleId: args.battleId,
+        turn: args.turnNumber,
+        userSide: args.userSide,
+        turnStartIdx,
+        idx,
+        user_active_len: user_active.length,
+        opp_active_len: opp_active.length,
+      });
+    }
 
     return {
       turn_number: args.turnNumber,

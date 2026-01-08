@@ -158,3 +158,95 @@ export type PracticeHeaderStats = {
   successRate: number; // 0..100 (computed)
   lastPracticed: string; // formatted date string for the header
 };
+
+export type SelectedAction =
+  | { kind: "move"; moveName: string }
+  | { kind: "switch"; speciesName: string };
+
+export type PracticeAttemptRow = {
+  id: string;
+  scenario_id: string;
+  created_at: number; // unix seconds
+  selected_action_json: string;
+  result_json: string;
+  rating: PracticeOutcomeRating | null;
+  summary: string | null;
+  duration_ms: number | null;
+  sim_engine: string | null;
+  sim_version: string | null;
+  notes: string | null;
+};
+
+export type SnapshotPosition = "p1a" | "p1b" | "p2a" | "p2b";
+export type SnapshotSide = "p1" | "p2";
+
+export type BackendSnapshot = {
+  turn_number: number;
+  user_side: SnapshotSide;
+  opponent_side: SnapshotSide;
+
+  user_active: Array<{
+    position: SnapshotPosition;
+    species_name: string;
+    hp_percent: number | null;
+  }>;
+
+  opp_active: Array<{
+    position: SnapshotPosition;
+    species_name: string;
+    hp_percent: number | null;
+  }>;
+
+  user_bench: Array<{
+    species_name: string;
+    hp_percent: number | null;
+  }>;
+
+  opp_bench: Array<{
+    species_name: string;
+    hp_percent: number | null;
+  }>;
+
+  legal_moves: Array<{
+    position: SnapshotPosition;
+    moves: Array<{
+      move_name: string;
+    }>;
+  }>;
+
+  legal_switches: Array<{
+    position: SnapshotPosition;
+    switches: Array<{
+      species_name: string;
+    }>;
+  }>;
+};
+
+export type PracticeDetailsDto = {
+  id: string;
+  source: PracticeScenarioSource;
+  status: PracticeScenarioStatus;
+  title: string;
+  subtitle: string | null;
+  description: string | null;
+
+  format_id: string | null;
+  team_id: string | null;
+  team_version_id: string | null;
+
+  battle_id: string | null;
+  turn_number: number | null;
+  user_side: "p1" | "p2" | null;
+
+  tags_json: string;
+  difficulty: number | null;
+
+  attempts: Array<{
+    id: string;
+    created_at: string;
+    rating: PracticeOutcomeRating;
+    summary: string | null;
+  }>;
+
+  snapshot: BackendSnapshot;
+};

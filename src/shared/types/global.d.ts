@@ -99,6 +99,26 @@ type CreatePracticeScenarioFromBattleTurnArgs = {
   turn_number: number;
 };
 
+type SelectedAction =
+  | { kind: "move"; moveName: string }
+  | { kind: "switch"; speciesName: string };
+
+type PracticeOutcomeRating = "worse" | "neutral" | "better";
+
+type PracticeAttemptRow = {
+  id: string;
+  scenario_id: string;
+  created_at: number; // unix seconds
+  selected_action_json: string;
+  result_json: string;
+  rating: PracticeOutcomeRating | null;
+  summary: string | null;
+  duration_ms: number | null;
+  sim_engine: string | null;
+  sim_version: string | null;
+  notes: string | null;
+};
+
 declare global {
   interface Window {
     __toast?: (message: string, type: "success" | "error") => void,
@@ -157,6 +177,12 @@ declare global {
         ) => Promise<PracticeScenarioRow>;
         getScenario: (id: string) => Promise<PracticeScenarioRow | null>;
         getDetails: (id: string) => Promise<PracticeScenarioDetails>
+        createAttempt: (
+          args: {
+            scenario_id: string;
+            selected_action: SelectedAction;
+          }
+        ) => Promise<PracticeAttemptRow>;
       };
     };
   }

@@ -50,6 +50,12 @@ electron.contextBridge.exposeInMainWorld("api", {
     listMyScenarios: () => electron.ipcRenderer.invoke("db:practice:listMyScenarios"),
     createFromBattleTurn: (args) => electron.ipcRenderer.invoke("db:practice:createFromBattleTurn", args),
     getScenario: (id) => electron.ipcRenderer.invoke("db:practice:getScenario", id),
-    getDetails: (id) => electron.ipcRenderer.invoke("db:practice:getDetails", id)
+    getDetails: (id) => electron.ipcRenderer.invoke("db:practice:getDetails", id),
+    async createAttempt(scenarioId, selectedAction) {
+      return electron.ipcRenderer.invoke("db:practice:createAttempt", {
+        scenario_id: scenarioId,
+        selected_action: selectedAction
+      });
+    }
   }
 });

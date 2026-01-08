@@ -11,6 +11,10 @@ export type ImportBattlesResult = {
   >;
 };
 
+type SelectedAction =
+  | { kind: "move"; moveName: string }
+  | { kind: "switch"; speciesName: string };
+
 // --------- Expose some API to the Renderer process ---------
 contextBridge.exposeInMainWorld('ipcRenderer', {
   on(...args: Parameters<typeof ipcRenderer.on>) {
@@ -101,5 +105,12 @@ contextBridge.exposeInMainWorld("api", {
       ipcRenderer.invoke("db:practice:getScenario", id) as Promise<PracticeScenarioRow | null>,
     
     getDetails: (id: string) => ipcRenderer.invoke("db:practice:getDetails", id),
+
+    async createAttempt(scenarioId: string, selectedAction: SelectedAction) {
+      return ipcRenderer.invoke("db:practice:createAttempt", {
+        scenario_id: scenarioId,
+        selected_action: selectedAction,
+      });
+    },
   },        
 });

@@ -1,186 +1,129 @@
-// electron/ipc/dbHandlers.ts
-import { ipcMain } from "electron";
-import { getDb } from "../db/index";
+// electron/db/queries/practice/services/PracticeDecisionSnapshotService.ts
+import { Database } from "better-sqlite3";
+import { PracticePosition } from "../types";
 
-// -----------------------------
-// Teams
-// -----------------------------
-import { teamsRepo } from "../db/queries/teams/repo/teamsRepo";
-import { teamImportService } from "../db/queries/teams/services/TeamImportService";
-import { TeamActiveService } from "../db/queries/teams/services/TeamActiveService";
+export function PracticeDecisionSnapshotService(db: Database) {
+  function getLatestSwitchFromBattleSwitches(
+    battleId: string,
+    pos: PracticePosition,
+    eventIndex: number
+  ) {
+    const row = db
+      .prepare(
+        `
+        SELECT
+          s.position,
+          i.species_name,
+          s.hp_text
+        FROM battle_switches s
+        JOIN battle_pokemon_instances i
+          ON i.id = s.pokemon_instance_id
+        WHERE s.battle_id = ?
+          AND s.position = ?
+          AND s.event_index <= ?
+        ORDER BY s.event_index DESC
+        LIMIT 1
+        `
+      )
+      .get(battleId, pos, eventIndex) as
+      | { position: PracticePosition; species_name: string; hp_text: string | null }
+      | undefined;
 
-// -----------------------------
-// Battles
-// -----------------------------
-import { battleRepo } from "../db/queries/battles/repo/battleRepo";
-import { battleIngestService } from "../db/queries/battles/services/BattleIngestService";
-import { BattleLinkService } from "../db/queries/battles/services/BattleLinkService";
+    return row ?? null;
+  }
 
-// -----------------------------
-// Settings
-// -----------------------------
-import { getSettings, updateSettings } from "../db/queries/settings/settings";
-import { getEvTrainingRecipe } from "../ai/openrouter";
+  function parseSwitchRawLine(raw: string): { species_name: string; hp_text: string | null } | null {
+    // Typical stored raw_line: "|switch|p1a: Garchomp|Garchomp, L50, M|100/100"
+    // Some rows may have leading junk; normalize from first '|'
+    const i = raw.indexOf("|");
+    const norm = i >= 0 ? raw.slice(i) : raw;
 
-// -----------------------------
-// Dashboard
-// -----------------------------
-import { dashboardRepo } from "../db/queries/dashboard/repo/dashboardRepo";
+    const parts = norm.split("|");
+    // parts: ["", "switch", "p1a: X", "Species, L50...", "100/100"]
+    if (parts.length < 4) return null;
+    if (parts[1] !== "switch") return null;
 
-// -----------------------------
-// Practice
-// -----------------------------
-import { practiceScenariosRepo } from "../db/queries/practice/repo/practiceScenariosRepo";
-import { practiceDetailsService } from "../db/queries/practice/services/PracticeDetailsService";
+    const details = parts[3] ?? "";
+    const species_name = details.split(",")[0]?.trim();
+    if (!species_name) return null;
 
-/**
- * Centralized registration of DB-backed IPC handlers.
- *
- * Keep this file “composition-only”:
- * - create repos/services
- * - wire them to ipcMain.handle(...)
- * - do not embed SQL here
- */
-export function registerDbHandlers() {
-  // Build “composition root” objects once.
-  // (Better-sqlite3 is synchronous; these are cheap wrappers.)
-  const db = getDb();
+    const hp_text = (parts[4] ?? "").trim() || null;
+    return { species_name, hp_text };
+  }
 
-  const teams = teamsRepo(db);
-  const battles = battleRepo(db);
+  function getLatestSwitchFromBattleEvents(
+    battleId: string,
+    pos: PracticePosition,
+    eventIndex: number
+  ) {
+    const row = db
+      .prepare(
+        `
+        SELECT event_index, raw_line
+        FROM battle_events
+        WHERE battle_id = ?
+          AND event_index <= ?
+          AND raw_line LIKE '%|switch|'
+          AND raw_line LIKE '%' || ? || '%'
+        ORDER BY event_index DESC
+        LIMIT 1
+        `
+      )
+      .get(battleId, eventIndex, `${pos}: %`) as
+      | { event_index: number; raw_line: string }
+      | undefined;
 
-  const battleLink = BattleLinkService(db, {
-    battleRepo: battles,
-    teamsRepo: teams,
-  });
+    if (!row?.raw_line) return null;
+    const parsed = parseSwitchRawLine(row.raw_line);
+    if (!parsed) return null;
 
-  const battleIngest = battleIngestService(db, {
-    battleRepo: battles,
-    battleLinkService: battleLink,
-  });
+    return { position: pos, species_name: parsed.species_name, hp_text: parsed.hp_text } as {
+      position: PracticePosition;
+      species_name: string;
+      hp_text: string | null;
+    };
+  }
 
-  const teamActive = new TeamActiveService(teams);
+  function getLatestSwitchAtOrBefore(
+    battleId: string,
+    pos: PracticePosition,
+    eventIndex: number
+  ) {
+    // Preferred: structured ingest tables (battle_switches)
+    const fromStructured = getLatestSwitchFromBattleSwitches(battleId, pos, eventIndex);
+    if (fromStructured) return fromStructured;
 
-  const teamImport = teamImportService(db, {
-    teamsRepo: teams,
-    battleRepo: battles,
-  });
+    // Fallback: parse the raw battle_events log
+    const fromEvents = getLatestSwitchFromBattleEvents(battleId, pos, eventIndex);
+    return fromEvents;
+  }
 
-  // Teams
-  ipcMain.handle("db:teams:list", async () => teams.listTeams());
-  ipcMain.handle("db:teams:getDetails", async (_evt, teamId: string) => teams.getTeamDetails(teamId));
-  ipcMain.handle("db:teams:getActiveSummary", async () => teams.getActiveTeamSummary());
-  ipcMain.handle("db:teams:getActiveActivity", async () => teams.getActiveTeamActivity());
-  ipcMain.handle("db:teams:setTeamActive", async (_evt, teamId: string) => teamActive.setActiveTeam(teamId));
-  ipcMain.handle("db:teams:delete", async (_evt, teamId: string) => teams.deleteTeam(teamId));
-  ipcMain.handle("db:teams:importPokepaste", async (_evt, args) => teamImport.importFromPokepaste(args));
-  ipcMain.handle("db:teams:previewPokepaste", async (_evt, args) => teamImport.previewFromPokepaste(args));
-  ipcMain.handle("db:teams:getEvRecipes", async (_evt, teamVersionId: string) =>
-    teams.listTeamEvRecipes(teamVersionId)
-  );
-  ipcMain.handle(
-    "db:teams:saveEvRecipe",
-    async (_evt, args: { team_version_id: string; pokemon_set_id: string; source: "local" | "ai"; recipe_json: string }) =>
-      teams.upsertTeamEvRecipe({ ...args, now: new Date().toISOString() })
-  );
+  function buildDecisionSnapshot(args: {
+    battleId: string;
+    turnNumber: number;
+  }) {
+    // ... other logic ...
 
-  // Battles
-  ipcMain.handle("db:battles:list", async (_evt, args) => {
-    const limit = args?.limit ?? 200;
-    const offset = args?.offset ?? 0;
+    const turnStartIdx = null; // placeholder for actual computation
+    const idx = turnStartIdx ?? 9_999_999_999;
 
-    return battles.listBattles({ limit, offset });
-  });
-  ipcMain.handle("db:battles:getDetails", async (_evt, battleId: string) => {
-    const d = battles.getBattleDetails(battleId);
-    if (!d) return null;
+    // Debug: confirm we can see initial switch lines through the fallback query
+    // (Remove later once stable)
+    // eslint-disable-next-line no-console
+    // console.log("[snapshot debug idx]", { battleId: args.battleId, turn: args.turnNumber, idx });
 
-    const set = battles.getBattleSetSummary(battleId);
+    // ... rest of buildDecisionSnapshot implementation ...
 
     return {
-      battle: {
-        ...d.battle,
-        team_label: null,
-        team_version_label: null,
-        match_confidence: d.userLink?.match_confidence ?? null,
-        match_method: d.userLink?.match_method ?? null,
-      },
-      set: set
-        ? {
-            id: set.id,
-            game_number: set.game_number ?? null,
-            total_games: set.total_games ?? (set.games.length || null),
-            games: set.games.map((g) => ({
-              battle_id: g.battle_id,
-              replay_id: g.replay_id,
-              played_at: g.played_at,
-              game_number: g.game_number ?? 0, // frontend prefers number; see note below
-            })),
-          }
-        : null,
-      sides: d.sides,
-      preview: d.preview,
-      revealed: d.revealed,
-      events: d.events,
+      user_active: [],
+      opp_active: [],
+      legal_moves: [],
+      legal_switches: [],
     };
-  });
-  ipcMain.handle("db:battles:importReplays", async (_evt, args: { text: string }) => {
-    return battleIngest.importFromReplaysText(args.text);
-  });
-  ipcMain.handle("db:battles:relinkBattle", async (_evt, battleId: string) => {
-    return battleLink.autoLinkBattleForUserSide({ battleId, formatKeyHint: null });
-  });
+  }
 
-  // Settings
-  ipcMain.handle("db:settings:get", async () => getSettings());
-  ipcMain.handle(
-    "db:settings:update",
-    async (_evt, patch: Record<string, string | null>) => updateSettings(patch)
-  );
-
-  // AI
-  ipcMain.handle("ai:evs:recipe", async (_evt, args) => {
-    const settings = getSettings();
-    if (!settings.ai_enabled) {
-      throw new Error("AI assistant is disabled in Settings.");
-    }
-    const apiKey = settings.openrouter_api_key;
-    if (!apiKey) {
-      throw new Error("Missing OpenRouter API key. Configure it in Settings.");
-    }
-
-    const model = settings.openrouter_model ?? "openrouter/auto";
-    return getEvTrainingRecipe({ apiKey, model, request: args });
-  });
-
-  // Dashbaord
-  const dashboard = dashboardRepo(db);
-  ipcMain.handle("db:dashboard:getKpis", async () => {
-    return dashboard.getKpis();
-  });
-
-  // Practice
-  const practice = practiceScenariosRepo(db);
-  ipcMain.handle("db:practice:listMyScenarios", async () => {
-    return practice.listMyScenarios();
-  });
-
-  ipcMain.handle(
-    "db:practice:createFromBattleTurn",
-    async (_ev, args: { battle_id: string; turn_number: number }) => {
-      return practice.insertFromBattleTurn(args);
-    }
-  );
-
-  ipcMain.handle(
-    "db:practice:getScenario",
-    async (_ev, id: string) => {
-      return practice.getScenarioById(id);
-    }
-  );
-
-  const practiceDetails = practiceDetailsService(db);
-  ipcMain.handle("db:practice:getDetails", async (_ev, id: string) => {
-    return practiceDetails.getDetails(id);
-  });
+  return {
+    getLatestSwitchAtOrBefore,
+    buildDecisionSnapshot,
+  };
 }

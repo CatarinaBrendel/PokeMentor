@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS practice_scenarios (
 
   battle_id TEXT REFERENCES battles(id) ON DELETE SET NULL,
   turn_number INTEGER,                              -- decision turn for battle-derived scenarios
-  user_side TEXT CHECK (user_side IN ('p1','p2')),  -- optional: inferred user side at creation time
+  user_side TEXT CHECK (user_side IN ('p1','p2') OR user_side IS NULL),  -- optional: inferred user side at creation time
 
   -- lightweight organization fields (JSON so we can iterate without extra tables)
   tags_json TEXT NOT NULL DEFAULT '[]',             -- JSON array string

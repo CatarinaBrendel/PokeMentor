@@ -1,5 +1,9 @@
-import type { PracticeScenarioDetails } from "../model/practice.types";
-import type { PracticeScenarioRow } from "../model/practice.types";
+import type {
+  PracticeScenarioRow,
+  SelectedAction,
+  PracticeAttemptRow,
+  PracticeDetailsDto,
+} from "../model/practice.types";
 
 export const PracticeApi = {
   listMyScenarios: () =>
@@ -12,5 +16,11 @@ export const PracticeApi = {
     window.api.practice.getScenario(id) as Promise<PracticeScenarioRow | null>,
 
   getDetails: (id: string) =>
-    window.api.practice.getDetails(id) as Promise<PracticeScenarioDetails> | null,
+    window.api.practice.getDetails(id) as Promise<PracticeDetailsDto | null>,
+
+  createAttempt: (scenarioId: string, selectedAction: SelectedAction) =>
+    window.api.practice.createAttempt({
+      scenario_id: scenarioId,
+      selected_action: selectedAction,
+    }) as Promise<PracticeAttemptRow>,
 };

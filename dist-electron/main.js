@@ -2829,6 +2829,11 @@ function hpTextToPercent(hp_text) {
 function positionsForSide(side) {
   return side === "p1" ? ["p1a", "p1b"] : ["p2a", "p2b"];
 }
+function positionAliases(pos) {
+  if (pos === "p1a") return ["p1a", "p1"];
+  if (pos === "p2a") return ["p2a", "p2"];
+  return [pos];
+}
 function PracticeDecisionSnapshotService(db2) {
   function getTurnStartEventIndex(battleId, turnNumber) {
     const row = db2.prepare(
@@ -2844,24 +2849,56 @@ function PracticeDecisionSnapshotService(db2) {
     ).get(battleId, turnNumber);
     return (row == null ? void 0 : row.idx) ?? null;
   }
+  function parseSwitchLikeLine(raw_line) {
+    const line = (raw_line ?? "").trimStart();
+    if (!line.startsWith("|")) return null;
+    const parts = line.split("|");
+    let i = 1;
+    while (i < parts.length && parts[i] === "") i++;
+    const kind = parts[i];
+    if (kind !== "switch" && kind !== "drag" && kind !== "replace") return null;
+    const actor = (parts[i + 1] ?? "").trim();
+    const m = actor.match(/^(p[12](?:a|b)?):\s*(.+)$/);
+    if (!m) return null;
+    const position = m[1];
+    const species_name = (m[2] || "").trim() || (parts[i + 2] ?? "").trim();
+    const hp_text_raw = (parts[i + 3] ?? "").trim();
+    const hp_text = hp_text_raw ? hp_text_raw : null;
+    if (!species_name) return null;
+    return { position, species_name, hp_text };
+  }
   function getLatestSwitchAtOrBefore(battleId, pos, eventIndex) {
-    const row = db2.prepare(
+    const aliases = positionAliases(pos);
+    const rows = db2.prepare(
       `
-        SELECT
-          s.position,
-          i.species_name,
-          s.hp_text
-        FROM battle_switches s
-        JOIN battle_pokemon_instances i
-          ON i.id = s.pokemon_instance_id
-        WHERE s.battle_id = ?
-          AND s.position = ?
-          AND s.event_index <= ?
-        ORDER BY s.event_index DESC
-        LIMIT 1
+        SELECT event_index, raw_line
+        FROM battle_events
+        WHERE battle_id = ?
+          AND event_index <= ?
+          AND raw_line IS NOT NULL
+          AND (
+            raw_line LIKE '|switch|%'
+            OR raw_line LIKE '||switch|%'
+            OR raw_line LIKE '|drag|%'
+            OR raw_line LIKE '||drag|%'
+            OR raw_line LIKE '|replace|%'
+            OR raw_line LIKE '||replace|%'
+          )
+        ORDER BY event_index DESC
+        LIMIT 2000
         `
-    ).get(battleId, pos, eventIndex);
-    return row ?? null;
+    ).all(battleId, eventIndex);
+    for (const r of rows) {
+      const parsed = parseSwitchLikeLine(r.raw_line);
+      if (!parsed) continue;
+      if (!aliases.includes(parsed.position)) continue;
+      return {
+        position: pos,
+        species_name: parsed.species_name,
+        hp_text: parsed.hp_text
+      };
+    }
+    return null;
   }
   function listPreviewRoster(battleId, side) {
     const rows = db2.prepare(
@@ -2932,6 +2969,17 @@ function PracticeDecisionSnapshotService(db2) {
       position: pos,
       switches: user_bench.map((b) => ({ species_name: b.species_name }))
     }));
+    if (user_active.length === 0 || opp_active.length === 0) {
+      console.log("[snapshot] empty actives", {
+        battleId: args.battleId,
+        turn: args.turnNumber,
+        userSide: args.userSide,
+        turnStartIdx,
+        idx,
+        user_active_len: user_active.length,
+        opp_active_len: opp_active.length
+      });
+    }
     return {
       turn_number: args.turnNumber,
       user_side: args.userSide,
@@ -3011,7 +3059,7 @@ function practiceScenariosRepo(db2) {
     return `battle:${s.battle_id}::turn:${s.turn_number}::side:${s.user_side}::v1`;
   }
   function ensureDecisionSnapshot(s) {
-    var _a;
+    var _a, _b, _c;
     const hash = computeSnapshotHash(s);
     console.log("[ensureDecisionSnapshot]", {
       id: s.id,
@@ -3033,7 +3081,12 @@ function practiceScenariosRepo(db2) {
       turnNumber: s.turn_number,
       userSide: s.user_side
     });
-    console.log("[buildDecisionSnapshot result keys]", Object.keys(snapshot ?? {}));
+    console.log("[snapshot]", {
+      user_active_len: (_b = snapshot.user_active) == null ? void 0 : _b.length,
+      opp_active_len: (_c = snapshot.opp_active) == null ? void 0 : _c.length,
+      turn: snapshot.turn_number,
+      user_side: snapshot.user_side
+    });
     const now = Math.floor(Date.now() / 1e3);
     const snapshot_json = JSON.stringify(snapshot);
     updateSnapshot({
@@ -3132,173 +3185,119 @@ function practiceScenariosRepo(db2) {
       snapshot
     };
   }
+  function bumpScenarioAfterAttempt(args) {
+    db2.prepare(
+      `
+      UPDATE practice_scenarios
+      SET
+        attempts_count = attempts_count + 1,
+        last_practiced_at = ?,
+        updated_at = ?
+      WHERE id = ?
+      `
+    ).run(args.updated_at, args.updated_at, args.id);
+  }
   return {
     listMyScenarios,
     getScenarioById,
     insertFromBattleTurn,
-    getDetails
+    getDetails,
+    bumpScenarioAfterAttempt
   };
 }
-function parseJsonArray(s, fallback = []) {
-  if (!s) return fallback;
-  try {
-    const x = JSON.parse(s);
-    return Array.isArray(x) ? x : fallback;
-  } catch {
-    return fallback;
-  }
-}
-function inferGameType(rawLog) {
-  return rawLog.includes("|gametype|doubles") ? "doubles" : "singles";
-}
-function parseActivesAtTurn(rawLog, decisionTurn) {
-  var _a, _b;
-  const actives = { p1a: null, p1b: null, p2a: null, p2b: null };
-  const lines = rawLog.split("\n");
-  for (const line of lines) {
-    if (!line.startsWith("|")) continue;
-    if (line.startsWith("|turn|")) {
-      const n = Number(line.split("|")[2]);
-      if (Number.isFinite(n) && n === decisionTurn) break;
-    }
-    if (line.startsWith("|switch|") || line.startsWith("|drag|")) {
-      const parts = line.split("|");
-      const who = parts[2] ?? "";
-      const details = parts[3] ?? "";
-      const pos = (_a = who.split(":")[0]) == null ? void 0 : _a.trim();
-      if (pos !== "p1a" && pos !== "p1b" && pos !== "p2a" && pos !== "p2b") continue;
-      const species = (_b = details.split(",")[0]) == null ? void 0 : _b.trim();
-      if (species) actives[pos] = species;
-    }
-  }
-  return actives;
-}
-function practiceDetailsService(db2) {
-  function getDetails(id) {
-    const scn = db2.prepare(`SELECT * FROM practice_scenarios WHERE id = ?`).get(id);
-    if (!scn) return null;
-    const tags = parseJsonArray(scn.tags_json, []);
-    const attemptsRows = db2.prepare(
+function practiceAttemptsRepo(db2) {
+  function listByScenarioId(scenarioId, limit = 50) {
+    return db2.prepare(
       `
-        SELECT id, created_at, rating, summary
+        SELECT
+          id,
+          scenario_id,
+          created_at,
+          selected_action_json,
+          result_json,
+          rating,
+          summary,
+          duration_ms,
+          sim_engine,
+          sim_version,
+          notes
         FROM practice_attempts
         WHERE scenario_id = ?
         ORDER BY created_at DESC
-        LIMIT 50
+        LIMIT ?
         `
-    ).all(id);
-    const attempts = attemptsRows.map((a) => ({
-      id: a.id,
-      created_at: new Date(a.created_at * 1e3).toISOString(),
-      rating: a.rating ?? null,
-      summary: a.summary ?? null
-    }));
-    if (!scn.battle_id || !scn.turn_number) {
-      return {
-        id: scn.id,
-        title: scn.title,
-        description: scn.description ?? scn.subtitle ?? null,
-        source: scn.source,
-        status: scn.status,
-        format_id: scn.format_id ?? null,
-        team_name: null,
-        battle_id: scn.battle_id ?? null,
-        turn_number: scn.turn_number ?? null,
-        tags,
-        attempts,
-        snapshot: {
-          game_type: "singles",
-          user_side: scn.user_side ?? null,
-          actives: { p1a: null, p1b: null, p2a: null, p2b: null },
-          bench: { p1: [], p2: [] },
-          legal_moves: { p1a: [], p1b: [], p2a: [], p2b: [] },
-          legal_switches: { p1a: [], p1b: [], p2a: [], p2b: [] }
-        }
-      };
-    }
-    const battleRow = db2.prepare(`SELECT raw_log FROM battles WHERE id = ?`).get(scn.battle_id);
-    const rawLog = (battleRow == null ? void 0 : battleRow.raw_log) ?? "";
-    const gameType = inferGameType(rawLog);
-    const activeSpeciesByPos = parseActivesAtTurn(rawLog, scn.turn_number);
-    const actives = {
-      p1a: activeSpeciesByPos.p1a ? { species_name: activeSpeciesByPos.p1a, hp_percent: null } : null,
-      p1b: activeSpeciesByPos.p1b ? { species_name: activeSpeciesByPos.p1b, hp_percent: null } : null,
-      p2a: activeSpeciesByPos.p2a ? { species_name: activeSpeciesByPos.p2a, hp_percent: null } : null,
-      p2b: activeSpeciesByPos.p2b ? { species_name: activeSpeciesByPos.p2b, hp_percent: null } : null
-    };
-    const preview = db2.prepare(
-      `
-        SELECT side, slot_index, species_name
-        FROM battle_preview_pokemon
-        WHERE battle_id = ?
-        ORDER BY side, slot_index
-        `
-    ).all(scn.battle_id);
-    const rosterBySide = { p1: [], p2: [] };
-    for (const r of preview) rosterBySide[r.side].push(r.species_name);
-    const activeSet = new Set(
-      Object.values(activeSpeciesByPos).filter((x) => Boolean(x))
-    );
-    const bench = {
-      p1: rosterBySide.p1.filter((s) => !activeSet.has(s)).map((s) => ({ species_name: s, hp_percent: null })),
-      p2: rosterBySide.p2.filter((s) => !activeSet.has(s)).map((s) => ({ species_name: s, hp_percent: null }))
-    };
-    const battleId = scn.battle_id;
-    function revealedMoves(side, species) {
-      if (!species) return [];
-      const row = db2.prepare(
-        `
-          SELECT moves_json
-          FROM battle_revealed_sets
-          WHERE battle_id = ? AND side = ? AND species_name = ?
-          `
-      ).get(battleId, side, species);
-      const moves = parseJsonArray(row == null ? void 0 : row.moves_json, []);
-      return moves.map((m) => ({ move_name: m }));
-    }
-    const legal_moves = {
-      p1a: revealedMoves("p1", activeSpeciesByPos.p1a),
-      p1b: revealedMoves("p1", activeSpeciesByPos.p1b),
-      p2a: revealedMoves("p2", activeSpeciesByPos.p2a),
-      p2b: revealedMoves("p2", activeSpeciesByPos.p2b)
-    };
-    const legal_switches = {
-      p1a: bench.p1.map((b) => ({ species_name: b.species_name })),
-      p1b: bench.p1.map((b) => ({ species_name: b.species_name })),
-      p2a: bench.p2.map((b) => ({ species_name: b.species_name })),
-      p2b: bench.p2.map((b) => ({ species_name: b.species_name }))
-    };
-    if (gameType === "singles") {
-      actives.p1b = null;
-      actives.p2b = null;
-      legal_moves.p1b = [];
-      legal_moves.p2b = [];
-      legal_switches.p1b = [];
-      legal_switches.p2b = [];
-    }
-    return {
-      id: scn.id,
-      title: scn.title,
-      description: scn.description ?? scn.subtitle ?? null,
-      source: scn.source,
-      status: scn.status,
-      format_id: scn.format_id ?? null,
-      team_name: null,
-      battle_id: scn.battle_id,
-      turn_number: scn.turn_number,
-      tags,
-      attempts,
-      snapshot: {
-        game_type: gameType,
-        user_side: scn.user_side ?? null,
-        actives,
-        bench,
-        legal_moves,
-        legal_switches
-      }
-    };
+    ).all(scenarioId, limit);
   }
-  return { getDetails };
+  function insertAttempt(args) {
+    const now = Math.floor(Date.now() / 1e3);
+    const id = randomUUID$1();
+    const selected_action_json = JSON.stringify(args.selected_action ?? {});
+    const result_json = JSON.stringify(args.result ?? {});
+    db2.prepare(
+      `
+      INSERT INTO practice_attempts (
+        id,
+        scenario_id,
+        created_at,
+        selected_action_json,
+        result_json,
+        rating,
+        summary,
+        duration_ms,
+        sim_engine,
+        sim_version,
+        notes
+      ) VALUES (
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?,
+        ?
+      )
+      `
+    ).run(
+      id,
+      args.scenario_id,
+      now,
+      selected_action_json,
+      result_json,
+      args.rating ?? null,
+      args.summary ?? null,
+      args.duration_ms ?? null,
+      args.sim_engine ?? null,
+      args.sim_version ?? null,
+      args.notes ?? null
+    );
+    const row = db2.prepare(
+      `
+        SELECT
+          id,
+          scenario_id,
+          created_at,
+          selected_action_json,
+          result_json,
+          rating,
+          summary,
+          duration_ms,
+          sim_engine,
+          sim_version,
+          notes
+        FROM practice_attempts
+        WHERE id = ?
+        `
+    ).get(id);
+    return row;
+  }
+  return {
+    listByScenarioId,
+    insertAttempt
+  };
 }
 function registerDbHandlers() {
   const db2 = getDb();
@@ -3411,10 +3410,36 @@ function registerDbHandlers() {
       return practice.getScenarioById(id);
     }
   );
-  const practiceDetails = practiceDetailsService(db2);
   ipcMain.handle("db:practice:getDetails", async (_ev, id) => {
-    return practiceDetails.getDetails(id);
+    var _a, _b;
+    const dto = practice.getDetails(id);
+    console.log("[getDetails snapshot check]", {
+      hasSnapshot: !!(dto == null ? void 0 : dto.snapshot),
+      legalMovesIsArray: Array.isArray((_a = dto == null ? void 0 : dto.snapshot) == null ? void 0 : _a.legal_moves),
+      legalMovesType: typeof ((_b = dto == null ? void 0 : dto.snapshot) == null ? void 0 : _b.legal_moves)
+    });
+    return dto;
   });
+  const practiceAttempts = practiceAttemptsRepo(db2);
+  ipcMain.handle(
+    "db:practice:createAttempt",
+    async (_ev, args) => {
+      const t0 = Date.now();
+      const attempt = practiceAttempts.insertAttempt({
+        scenario_id: args.scenario_id,
+        selected_action: args.selected_action,
+        rating: null,
+        summary: null,
+        result: { type: "mvp_no_sim_yet" },
+        duration_ms: Date.now() - t0,
+        sim_engine: null,
+        sim_version: null
+      });
+      const now = Math.floor(Date.now() / 1e3);
+      practice.bumpScenarioAfterAttempt({ id: args.scenario_id, updated_at: now });
+      return attempt;
+    }
+  );
 }
 const __filename$1 = fileURLToPath(import.meta.url);
 const __dirname$1 = dirname(__filename$1);
