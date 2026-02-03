@@ -1,4 +1,4 @@
-import React from "react";
+// import React from "react"; // not required with the new JSX transform
 import { KpiCard } from "./KpiCard";
 
 type KpiCardsRowProps = {

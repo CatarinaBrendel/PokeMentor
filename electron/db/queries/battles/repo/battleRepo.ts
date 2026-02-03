@@ -172,9 +172,7 @@ export type UpsertBattleHeaderArgs = {
   created_at: number;
 };
 
-function otherSide(side: Side): Side {
-  return side === "p1" ? "p2" : "p1";
-}
+// `otherSide` helper removed (unused).
 
 function clampInt(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));

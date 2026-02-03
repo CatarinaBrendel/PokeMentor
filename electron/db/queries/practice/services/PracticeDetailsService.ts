@@ -1,6 +1,5 @@
 import type { Database as SqliteDatabase } from "better-sqlite3";
-import { PracticeScenarioRow } from "../repo/practiceScenariosRepo";
-import { PracticeScenarioStatus, PracticeScenarioSource, PracticeOutcomeRating } from "../practice.types.ts";
+import { PracticeScenarioStatus, PracticeScenarioSource, PracticeOutcomeRating } from "../practice.types";
 
 type Side = "p1" | "p2";
 type Position = "p1a" | "p1b" | "p2a" | "p2b";
@@ -92,7 +91,7 @@ export function practiceDetailsService(db: SqliteDatabase) {
   function getDetails(id: string): PracticeScenarioDetails | null {
     const scn = db
       .prepare(`SELECT * FROM practice_scenarios WHERE id = ?`)
-      .get(id) as PracticeScenarioRow | undefined;
+      .get(id) as any | undefined;
 
     if (!scn) return null;
 

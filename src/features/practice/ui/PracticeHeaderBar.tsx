@@ -1,4 +1,5 @@
-import React from "react";
+// React import not required with the new JSX transform
+// import React from "react";
 import type { PracticeHeaderStats } from "../../../features/practice/model/practice.types";
 
 type PracticeHeaderBarProps = {

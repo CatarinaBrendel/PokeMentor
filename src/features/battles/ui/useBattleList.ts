@@ -1,7 +1,7 @@
 // src/features/battles/ui/useBattlesList.ts
 import { useEffect, useState } from "react";
-import type { BattleListItem, BattleListRow } from "../model/battles.types";
-import { toBattleListItem } from "../model/mapBattleList";
+import type { BattleListItem } from "../model/battles.types";
+import { BattlesApi } from "../api/batles.api";
 
 export function useBattlesList() {
   const [rows, setRows] = useState<BattleListItem[]>([]);
@@ -12,8 +12,8 @@ export function useBattlesList() {
     setLoading(true);
     setError(null);
     try {
-      const raw: BattleListRow[] = await window.BattlesApi.list({ limit: 200, offset: 0 });
-      setRows(raw.map(toBattleListItem));
+      const raw = await BattlesApi.list({ limit: 200, offset: 0 });
+      setRows(raw);
     } catch (e: any) {
       setError(e?.message ?? "Failed to load battles");
     } finally {

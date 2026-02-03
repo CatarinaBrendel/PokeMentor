@@ -17,31 +17,7 @@ function cx(...xs: Array<string | false | null | undefined>) {
 type SortKey = "name" | "format" | "version" | "updated";
 type SortDir = "asc" | "desc";
 
-function DebouncedError({
-  error,
-  delayMs = 200,
-}: {
-  error?: string | null;
-  delayMs?: number;
-}) {
-  const [visible, setVisible] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    if (!error) {
-      setVisible(null);
-      return;
-    }
-    const t = window.setTimeout(() => setVisible(error), delayMs);
-    return () => window.clearTimeout(t);
-  }, [error, delayMs]);
-
-  // Reserve space so the layout doesn't jump
-  return (
-    <div className="mt-4 min-h-[20px]">
-      {visible ? <div className="text-sm text-red-700">{visible}</div> : null}
-    </div>
-  );
-}
+// DebouncedError component removed (unused)
 
 type Props = {
   rows: TeamListRow[];

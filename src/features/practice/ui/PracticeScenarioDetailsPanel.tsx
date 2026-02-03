@@ -1,8 +1,10 @@
-import React from "react";
+// React import not required with the new JSX transform
+// import React from "react";
 import type {
   PracticeScenarioDetails,
   PracticeActiveMonSummary,
   PracticeAttemptSummary,
+  PracticeBenchMonSummary,
 } from "../../../features/practice/model/practice.types";
 
 type SelectedAction =
@@ -255,7 +257,7 @@ function Bench({
   onSelectSwitch,
   onClearSelection,
 }: {
-  bench: PracticeScenarioDetails["user_side"]["bench"];
+  bench: PracticeBenchMonSummary[];
   selectedAction?: SelectedAction | null;
   onSelectSwitch?: (speciesName: string) => void;
   onClearSelection?: () => void;

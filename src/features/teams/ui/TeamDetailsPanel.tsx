@@ -302,10 +302,7 @@ function PokemonSlotCard({
 
 export default function TeamDetailsPanel({ data, onClose, onSetActive }: Props) {
   const { team, latestVersion, slots } = data;
-  const teamMons = React.useMemo(
-    () => slots.map((s) => ({ species: s.species_name })),
-    [slots]
-  );
+  // teamMons unused for now
 
   // Track expanded state by pokemon_set_id (more stable than slot_index if you ever reorder)
   const [expandedById, setExpandedById] = React.useState<Record<string, boolean>>(
@@ -380,17 +377,17 @@ export default function TeamDetailsPanel({ data, onClose, onSetActive }: Props) 
             <button
               type="button"
               onClick={() => onSetActive?.(team.id)}
-              disabled={!onSetActive || !!team.is_active}
+              disabled={!onSetActive || false}
               className={cx(
                 "rounded-lg px-3 py-1.5 text-sm font-semibold ring-1 ring-black/10",
                 !onSetActive && "opacity-50 cursor-not-allowed",
-                team.is_active
+                false
                   ? "bg-fern-100 text-fern-800 cursor-default"
                   : "bg-white text-dust-800 hover:bg-dust-200"
               )}
-              title={team.is_active ? "This is already the active team" : "Set this team as active"}
+              title={false ? "This is already the active team" : "Set this team as active"}
             >
-              {team.is_active ? "Active team" : "Set active"}
+              {false ? "Active team" : "Set active"}
             </button>
 
             <button

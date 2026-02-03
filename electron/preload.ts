@@ -1,6 +1,6 @@
 import { ipcRenderer, contextBridge } from 'electron'
 import { TeamListRow } from './db/queries/teams/teams.types'
-import { PracticeScenarioRow } from './db/queries/practice/repo/practiceScenariosRepo';
+import type { PracticeScenarioRow } from '../src/features/practice/model/practice.types';
 
 export type ImportBattlesResult = {
   okCount: number;

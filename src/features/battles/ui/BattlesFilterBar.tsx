@@ -48,7 +48,6 @@ function selectValueToTeamFilter(v: string): TeamFilterValue {
 
 export default function BattlesFilterBar({
   teams,
-  activeTeam,
   teamFilter,
   onTeamFilterChange,
   resultFilter,

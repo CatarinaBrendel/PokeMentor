@@ -1,4 +1,4 @@
-import * as React from "react";
+// import * as React from "react"; // not required with the new JSX transform
 import type { TeamListRow } from "../../features/teams/model/teams.types";
 import {DASHBOARD_CARD} from "./CardBase"
 

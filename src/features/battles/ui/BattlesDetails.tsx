@@ -12,17 +12,7 @@ function userSideFromDto(dto: BattleDetailsDto | null | undefined): "p1" | "p2" 
   return s?.side ?? null;
 }
 
-function groupedPreview(dto: BattleDetailsDto | null | undefined) {
-  const p1 = (dto?.preview ?? [])
-    .filter((p) => p.side === "p1")
-    .sort((a, b) => a.slot_index - b.slot_index);
 
-  const p2 = (dto?.preview ?? [])
-    .filter((p) => p.side === "p2")
-    .sort((a, b) => a.slot_index - b.slot_index);
-
-  return { p1, p2 };
-}
 
 function toStripMons(xs: Array<{ species_name: string }>) {
   return xs.map((x) => ({ species: x.species_name }));
@@ -179,30 +169,6 @@ function toTimelineRows(dto: BattleDetailsDto | null | undefined) {
     });
 }
 
-function toTimelineGroups(dto: BattleDetailsDto | null | undefined): Array<{ turn: number; rows: string[] }> {
-  const xs = pickTimelineEvents(dto);
-
-  const sorted = [...xs].sort((a, b) => {
-    const ta = a.turn_num ?? 0;
-    const tb = b.turn_num ?? 0;
-    if (ta !== tb) return ta - tb;
-    return (a.event_index ?? 0) - (b.event_index ?? 0);
-  });
-
-  const groups = new Map<number, string[]>();
-  for (const e of sorted as TimelineEvent[]) {
-    if (e.line_type === "turn") continue;
-    const t = e.turn_num;
-    if (t == null) continue;
-    const arr = groups.get(t) ?? [];
-    arr.push(prettyTimelineText(e));
-    groups.set(t, arr);
-  }
-
-  return Array.from(groups.entries())
-    .sort((a, b) => a[0] - b[0])
-    .map(([turn, rows]) => ({ turn, rows }));
-}
 
 function TimelineRow({
   label,
@@ -356,7 +322,6 @@ export function BattleDetails({
 
   const replayUrl = details?.battle.replay_url ?? null;
   const timelineRows = useMemo(() => toTimelineRows(details), [details]);
-  const timelineGroups = useMemo(() => toTimelineGroups(details), [details]);
   const meta = details?.battle;
 
   // --- Set (Bo3) navigation (null-safe sorting + display fallbacks) ---
@@ -540,10 +505,9 @@ export function BattleDetails({
                 key={`${idx}-${row.label}`}
                 label={row.label}
                 text={row.text}
-                // NEW:
                 onCreateTurnScenario={
                   row.turnNumber != null && onCreatePracticeScenarioFromTurn
-                    ? () => onCreatePracticeScenarioFromTurn({ battleId: battle.id, turnNumber: row.turnNumber })
+                    ? () => onCreatePracticeScenarioFromTurn({ battleId: battle.id, turnNumber: row.turnNumber! })
                     : undefined
                 }
               />

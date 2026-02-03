@@ -1,4 +1,5 @@
-import * as React from "react";
+// React import not needed in this module (JSX runtime handles it)
+// import * as React from "react";
 
 function cx(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");

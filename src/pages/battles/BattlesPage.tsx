@@ -6,18 +6,14 @@ import {
   BattleDetailsPanel,
   ImportReplaysModal,
 } from "../../features/battles/ui";
-import type { BattleListRow, BattleListItem } from "../../features/battles/model/battles.types";
+import type { BattleListItem } from "../../features/battles/model/battles.types";
 import type { ImportReplaysResult, BattleDetailsDto } from "../../features/battles/model/battles.types";
 import { BattlesApi } from "../../features/battles/api/batles.api";
 import { TeamsApi } from "../../features/teams/api/teams.api";
 import type { TeamListRow } from "../../features/teams/model/teams.types";
 
 
-type ActiveTeamSummary = {
-  name: string;
-  formatLabel?: string;
-  versionLabel?: string;
-};
+// (removed unused ActiveTeamSummary type)
 
 type TeamFilterValue = "all" | "active" | { teamId: string };
 
@@ -28,56 +24,7 @@ function formatPlayedAt(ts: number | null) {
   return new Date(ts * 1000).toLocaleDateString();
 }
 
-function safeJson<T>(s: string | null | undefined, fallback: T): T {
-  try {
-    return s ? (JSON.parse(s) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function normalizeShowdownName(name: string): string {
-  return name.trim().replace(/^☆+/, "").replace(/\s+/g, "").toLowerCase();
-}
-
-function toUiRow(r: BattleListRow): BattleListItem {
-  const result: BattleListItem["result"] = (() => {
-    if (r.result === "win" || r.result === "loss") return r.result;
-    if (r.winner_name && r.user_player_name) {
-      const winner = normalizeShowdownName(r.winner_name);
-      const user = normalizeShowdownName(r.user_player_name);
-      if (winner && user) return winner === user ? "win" : "loss";
-    }
-    return "unknown";
-  })();
-
-  const format_ps = r.format_id ?? r.format_name ?? null;
-
-  const brought = safeJson<Array<{ species_name: string; is_lead: boolean }>>(
-    r.user_brought_json,
-    []
-  );
-
-  return {
-    id: r.id,
-    playedAtUnix: r.played_at,
-    playedAt: formatPlayedAt(r.played_at),
-    team_id: r.team_id ?? null,
-    result,
-    opponentName: r.opponent_name ?? "Unknown",
-    format_ps,
-    rated: r.is_rated === 1,
-
-    userSide: r.user_side, // <-- HERE
-
-    brought,
-
-    broughtUserSeen: r.user_brought_seen ?? null,
-    broughtUserExpected: r.user_brought_expected ?? null,
-    broughtOpponentSeen: r.opponent_brought_seen ?? null,
-    broughtOpponentExpected: r.opponent_brought_expected ?? null,
-  };
-}
+// API returns `BattleListItem[]` already; no local DB->UI mapping required.
 
 export function BattlesPage({ initialSelectedId }: Props) {
   const [rows, setRows] = React.useState<BattleListItem[]>([]);
@@ -105,10 +52,7 @@ export function BattlesPage({ initialSelectedId }: Props) {
       setLoading(true);
       setError(null);
 
-      // IMPORTANT: this should return BattleListRow[] (your SQL query output)
-      const dbRows = (await BattlesApi.list({ limit: 200, offset: 0 })) as BattleListRow[];
-      const uiRows = dbRows.map(toUiRow);
-
+      const uiRows = await BattlesApi.list({ limit: 200, offset: 0 });
       setRows(uiRows);
       console.log("[ui] total rows:", uiRows.length, "linked:", uiRows.filter(r => r.team_id).length);
       setSelectedId((prev) => prev || uiRows[0]?.id || "");

@@ -1,5 +1,6 @@
 import type { Database as SqliteDatabase } from "better-sqlite3";
-import type { PracticePosition } from "../../practice.types";
+// Local PracticePosition type (avoid cross-file type import mismatch)
+export type PracticePosition = "p1a" | "p1b" | "p2a" | "p2b";
 
 export function PracticeDecisionSnapshotService(db: SqliteDatabase) {
   /**

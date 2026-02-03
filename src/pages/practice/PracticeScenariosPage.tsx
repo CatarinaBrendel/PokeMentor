@@ -111,7 +111,6 @@ function dtoToPracticeDetails(dto: PracticeDetailsDto): PracticeScenarioDetails 
   const oppActiveArr = Array.isArray((snap as any)?.opp_active) ? (snap as any).opp_active : [];
   const legalMovesArr = Array.isArray((snap as any)?.legal_moves) ? (snap as any).legal_moves : [];
   const legalSwitchesArr = Array.isArray((snap as any)?.legal_switches) ? (snap as any).legal_switches : [];
-  const userBenchArr = Array.isArray((snap as any)?.user_bench) ? (snap as any).user_bench : [];
   const oppBenchArr = Array.isArray((snap as any)?.opp_bench) ? (snap as any).opp_bench : [];
 
   const userSide: "p1" | "p2" = dto.user_side ?? (snap as any)?.user_side ?? "p1";

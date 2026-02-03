@@ -1,5 +1,5 @@
 // src/shared/ui/ActiveTeamActivityCard.tsx
-import React from "react";
+// import React from "react"; // not required with the new JSX transform
 import type { ActiveTeamActivity } from "../../features/teams/model/teams.types";
 import { DASHBOARD_CARD } from "./CardBase";
 

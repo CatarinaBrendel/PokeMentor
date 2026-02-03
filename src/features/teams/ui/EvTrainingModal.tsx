@@ -149,6 +149,7 @@ export default function EvTrainingModal({ open, onClose, slots, teamVersionId }:
   );
   const [recipe, setRecipe] = React.useState<EvRecipe | null>(null);
   const [loading, setLoading] = React.useState(false);
+  const [aiUsed, setAiUsed] = React.useState(false);
   const [showMath, setShowMath] = React.useState(false);
   const [aiEnabled, setAiEnabled] = React.useState(true);
   const [storedRecipes, setStoredRecipes] = React.useState<
@@ -163,17 +164,22 @@ export default function EvTrainingModal({ open, onClose, slots, teamVersionId }:
   React.useEffect(() => {
     if (!open) return;
     if (!selectedSlot) return;
+    // Reset AI-used flag when opening modal — default to Local Recipe
+    setAiUsed(false);
     const stored = storedRecipes[selectedSlot.pokemon_set_id];
     const localFallback = buildLocalRecipe(selectedSlot);
     if (hasRecipeItems(stored?.ai)) {
       setRecipe(stored?.ai ?? localFallback);
+      setAiUsed(true);
       return;
     }
     if (hasRecipeItems(stored?.local)) {
       setRecipe(stored?.local ?? localFallback);
+      setAiUsed(false);
       return;
     }
     setRecipe(localFallback);
+    setAiUsed(false);
     setShowMath(false);
   }, [open, selectedSlot, storedRecipes]);
 
@@ -245,20 +251,26 @@ export default function EvTrainingModal({ open, onClose, slots, teamVersionId }:
           spe: selectedSlot.ev_spe ?? 0,
         },
       });
-      const next = { ...aiRecipe, source: "ai" };
+      // Heuristic: if the returned recipe contains a fallback note, treat it as local
+      const notes = aiRecipe.notes ?? [];
+      const assumptions = aiRecipe.assumptions ?? [];
+      const looksLikeFallback = notes.some((n) => /fallback/i.test(n)) || assumptions.some((a) => /fallback|generated locally/i.test(a));
+      const sourceKind: EvRecipe["source"] = looksLikeFallback ? "local" : "ai";
+      const next: EvRecipe = { ...aiRecipe, source: sourceKind };
       setRecipe(next);
+      setAiUsed(sourceKind === "ai");
       if (teamVersionId) {
         await TeamsApi.saveEvRecipe({
           team_version_id: teamVersionId,
           pokemon_set_id: selectedSlot.pokemon_set_id,
-          source: "ai",
+          source: sourceKind,
           recipe_json: JSON.stringify(next),
         });
         setStoredRecipes((prev) => ({
           ...prev,
           [selectedSlot.pokemon_set_id]: {
             ...prev[selectedSlot.pokemon_set_id],
-            ai: next,
+            [sourceKind === "ai" ? "ai" : "local"]: next,
           },
         }));
       }
@@ -283,7 +295,7 @@ export default function EvTrainingModal({ open, onClose, slots, teamVersionId }:
 
   return (
     <Modal open={open} onClose={onClose} maxWidthClassName="max-w-3xl">
-      <div className="max-h-[80vh] overflow-y-auto pr-1">
+      <div className="max-h-[80vh] overflow-y-auto px-4">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="text-sm font-semibold text-dust-500">EV Training Recipe</div>
@@ -298,7 +310,7 @@ export default function EvTrainingModal({ open, onClose, slots, teamVersionId }:
 
         <div className="flex items-center gap-2">
           <div className="rounded-full bg-sage-100 px-3 py-1 text-xs font-semibold text-sage-700 ring-1 ring-black/5">
-            {recipe?.source === "ai" ? "AI-assisted" : "Smart recipe"}
+            {aiUsed && recipe?.source === "ai" ? "AI-assisted" : "Local Recipe"}
           </div>
           <button
             type="button"
@@ -328,7 +340,7 @@ export default function EvTrainingModal({ open, onClose, slots, teamVersionId }:
             id="ev-recipe-slot"
             value={selectedId}
             onChange={(e) => setSelectedId(e.target.value)}
-            className="h-10 w-full appearance-none rounded-2xl bg-white/70 pl-3 pr-10 text-sm ring-1 ring-black/10 focus:outline-none focus:ring-2 focus:ring-fern-500/40"
+            className="h-10 w-full appearance-none rounded-2xl bg-white/70 pl-3 pr-10 text-sm ring-1 ring-black/10 focus:outline-none focus:ring-2 focus:ring-fern-500/40 relative z-20"
           >
             {slots.map((slot) => (
               <option key={slot.pokemon_set_id} value={slot.pokemon_set_id}>
@@ -351,7 +363,7 @@ export default function EvTrainingModal({ open, onClose, slots, teamVersionId }:
       </div>
 
       <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_240px]">
-          <div className="rounded-3xl bg-white/70 p-4 ring-1 ring-black/10">
+          <div className="rounded-3xl bg-white/70 p-4 ring-1 ring-black/10 overflow-visible relative z-10">
             {recipe?.stats.length ? (
               <div className="space-y-4">
                 {recipe.stats

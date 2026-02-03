@@ -1,4 +1,5 @@
-import React from "react";
+// React import not required with the new JSX transform
+// import React from "react";
 
 export type TeamsTab = "import" | "list";
 

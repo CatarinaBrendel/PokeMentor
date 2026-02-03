@@ -1,5 +1,6 @@
 import React from "react";
-import TeamSpriteStrip from "../../pokemon/ui/TeamSpriteStrip";
+// TeamSpriteStrip imported previously but currently unused in this file
+// import TeamSpriteStrip from "../../pokemon/ui/TeamSpriteStrip";
 import type { PracticeScenarioListItem } from "../../../features/practice/model/practice.types";
 
 type PracticeScenarioListPanelProps = {
