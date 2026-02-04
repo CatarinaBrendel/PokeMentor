@@ -161,6 +161,28 @@ export default function EvTrainingModal({ open, onClose, slots, teamVersionId }:
     [slots, selectedId]
   );
 
+  const AI_USED_KEY = "pm:aiUsed";
+
+  function readAiUsedMap(): Record<string, boolean> {
+    try {
+      const raw = localStorage.getItem(AI_USED_KEY);
+      if (!raw) return {};
+      return JSON.parse(raw) as Record<string, boolean>;
+    } catch {
+      return {};
+    }
+  }
+
+  function writeAiUsedForSlot(slotId: string, used: boolean) {
+    try {
+      const map = readAiUsedMap();
+      map[slotId] = used;
+      localStorage.setItem(AI_USED_KEY, JSON.stringify(map));
+    } catch {
+      // ignore storage errors
+    }
+  }
+
   React.useEffect(() => {
     if (!open) return;
     if (!selectedSlot) return;
@@ -179,7 +201,10 @@ export default function EvTrainingModal({ open, onClose, slots, teamVersionId }:
       return;
     }
     setRecipe(localFallback);
-    setAiUsed(false);
+    // If there's a persisted aiUsed flag for this slot, honor it
+    const persisted = readAiUsedMap()[selectedSlot.pokemon_set_id];
+    if (typeof persisted === "boolean") setAiUsed(persisted);
+    else setAiUsed(false);
     setShowMath(false);
   }, [open, selectedSlot, storedRecipes]);
 
@@ -273,6 +298,12 @@ export default function EvTrainingModal({ open, onClose, slots, teamVersionId }:
             [sourceKind === "ai" ? "ai" : "local"]: next,
           },
         }));
+        // persist aiUsed flag per-slot so badge reflects saved AI usage across sessions
+        try {
+          writeAiUsedForSlot(selectedSlot.pokemon_set_id, sourceKind === "ai");
+        } catch {
+          /* ignore storage errors */
+        }
       }
     } catch (e) {
       toast(e instanceof Error ? e.message : "Failed to fetch AI recipe.", "error");
@@ -295,7 +326,7 @@ export default function EvTrainingModal({ open, onClose, slots, teamVersionId }:
 
   return (
     <Modal open={open} onClose={onClose} maxWidthClassName="max-w-3xl">
-      <div className="max-h-[80vh] overflow-y-auto px-4">
+      <div className="max-h-[80vh] overflow-y-auto px-3">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="text-sm font-semibold text-dust-500">EV Training Recipe</div>

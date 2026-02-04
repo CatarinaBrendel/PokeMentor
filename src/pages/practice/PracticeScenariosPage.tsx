@@ -104,33 +104,131 @@ function emptyDetailsFromRow(row: PracticeScenarioRow): PracticeScenarioDetails 
 }
 
 function dtoToPracticeDetails(dto: PracticeDetailsDto): PracticeScenarioDetails {
-  const snap = dto.snapshot;
+  const snap = dto.snapshot as unknown;
 
-  // Hard guard: if snapshot is missing or malformed, fall back safely
-  const userActiveArr = Array.isArray((snap as any)?.user_active) ? (snap as any).user_active : [];
-  const oppActiveArr = Array.isArray((snap as any)?.opp_active) ? (snap as any).opp_active : [];
-  const legalMovesArr = Array.isArray((snap as any)?.legal_moves) ? (snap as any).legal_moves : [];
-  const legalSwitchesArr = Array.isArray((snap as any)?.legal_switches) ? (snap as any).legal_switches : [];
-  const oppBenchArr = Array.isArray((snap as any)?.opp_bench) ? (snap as any).opp_bench : [];
+  // Server-side shape (produced by `PracticeDetailsService`) uses `actives`, `bench`,
+  // `legal_moves` and `legal_switches` keyed by position. Prefer that if present.
+  if (snap && typeof snap === "object" && "actives" in (snap as Record<string, unknown>)) {
+    const s = snap as {
+      user_side?: "p1" | "p2" | null;
+      actives?: Record<string, { species_name: string; hp_percent: number | null } | null>;
+      bench?: Record<string, Array<{ species_name: string; hp_percent: number | null }>>;
+      legal_moves?: Record<string, Array<{ move_name: string }>>;
+      legal_switches?: Record<string, Array<{ species_name: string }>>;
+    };
 
-  const userSide: "p1" | "p2" = dto.user_side ?? (snap as any)?.user_side ?? "p1";
+    const userSide: "p1" | "p2" = (dto.user_side ?? s.user_side) ?? "p1";
+    const oppSide: "p1" | "p2" = userSide === "p1" ? "p2" : "p1";
+    const primaryUserPos: SnapshotPosition = userSide === "p1" ? "p1a" : "p2a";
+    const primaryOppPos: SnapshotPosition = oppSide === "p1" ? "p1a" : "p2a";
+
+    const primaryUserActive = s.actives?.[primaryUserPos] ?? null;
+    const primaryOppActive = s.actives?.[primaryOppPos] ?? null;
+
+    const movesForPrimary = (s.legal_moves?.[primaryUserPos] ?? []).map((m) => ({ move_name: m.move_name ?? "" }));
+    const oppMoves = (s.legal_moves?.[primaryOppPos] ?? []).map((m) => ({ move_name: m.move_name ?? "" }));
+
+    const benchSwitches = (s.legal_switches?.[primaryUserPos] ?? []).map((b) => ({ species_name: b.species_name }));
+
+    const oppBenchArr = (s.bench?.[oppSide] ?? []).map((b) => ({ species_name: b.species_name ?? "Unknown", hp_percent: b.hp_percent ?? null }));
+
+    return {
+      id: dto.id,
+      title: dto.title,
+      description: dto.description ?? dto.subtitle ?? null,
+      source: dto.source,
+      status: dto.status,
+      format_id: dto.format_id ?? null,
+      team_name: null,
+      battle_id: dto.battle_id ?? null,
+      turn_number: dto.turn_number ?? null,
+      tags: parseTagsJson(dto.tags_json),
+
+      user_side: {
+        label: "You",
+        active: {
+          species_name: primaryUserActive?.species_name ?? "Unknown",
+          hp_percent: primaryUserActive?.hp_percent ?? null,
+          item_name: null,
+          ability_name: null,
+          moves: movesForPrimary,
+        },
+        bench: benchSwitches.map((s) => ({ species_name: s.species_name ?? "Unknown", hp_percent: null })),
+      },
+
+      opponent_side: {
+        label: "Opponent",
+        active: {
+          species_name: primaryOppActive?.species_name ?? "Unknown",
+          hp_percent: primaryOppActive?.hp_percent ?? null,
+          item_name: null,
+          ability_name: null,
+          moves: oppMoves,
+        },
+        bench: oppBenchArr,
+      },
+
+      attempts: dto.attempts ?? [],
+    };
+  }
+
+  // Fallback: legacy/renderer-shaped snapshot parsing (arrays per position)
+  // Keep previous logic but scoped to local variables so the function remains robust.
+  const userActiveArr = Array.isArray((snap as { user_active?: unknown })?.user_active)
+    ? ((snap as { user_active?: unknown }).user_active as unknown[])
+    : [];
+  const oppActiveArr = Array.isArray((snap as { opp_active?: unknown })?.opp_active)
+    ? ((snap as { opp_active?: unknown }).opp_active as unknown[])
+    : [];
+  const legalMovesArr = Array.isArray((snap as { legal_moves?: unknown })?.legal_moves)
+    ? ((snap as { legal_moves?: unknown }).legal_moves as unknown[])
+    : [];
+  const legalSwitchesArr = Array.isArray((snap as { legal_switches?: unknown })?.legal_switches)
+    ? ((snap as { legal_switches?: unknown }).legal_switches as unknown[])
+    : [];
+  const oppBenchArr = Array.isArray((snap as { opp_bench?: unknown })?.opp_bench)
+    ? ((snap as { opp_bench?: unknown }).opp_bench as unknown[])
+    : [];
+
+  const userSide: "p1" | "p2" = (dto.user_side ?? (snap as { user_side?: "p1" | "p2" }).user_side) ?? "p1";
   const oppSide: "p1" | "p2" = userSide === "p1" ? "p2" : "p1";
 
   const primaryUserPos: SnapshotPosition = userSide === "p1" ? "p1a" : "p2a";
   const primaryOppPos: SnapshotPosition = oppSide === "p1" ? "p1a" : "p2a";
 
-  const primaryUserActive = userActiveArr.find((a: any) => a?.position === primaryUserPos);
-  const primaryOppActive = oppActiveArr.find((a: any) => a?.position === primaryOppPos);
+  const primaryUserActive = userActiveArr.find((a) => (a as { position?: string })?.position === primaryUserPos) as
+    | { species_name?: string; hp_percent?: number }
+    | undefined;
+  const primaryOppActive = oppActiveArr.find((a) => (a as { position?: string })?.position === primaryOppPos) as
+    | { species_name?: string; hp_percent?: number }
+    | undefined;
 
-  const movesForPrimary =
-    legalMovesArr.find((m: any) => m?.position === primaryUserPos)?.moves ?? [];
+  const movesForPrimary = (() => {
+    const m = legalMovesArr.find((m) => (m as { position?: string })?.position === primaryUserPos);
+    const raw = Array.isArray((m as { moves?: unknown })?.moves) ? ((m as { moves?: unknown }).moves as unknown[]) : [];
+    return raw.map((it) => {
+      if (typeof it === "string") return { move_name: it };
+      if (it && typeof it === "object" && "move_name" in it && typeof (it as { move_name?: unknown }).move_name === "string")
+        return (it as { move_name: string });
+      return { move_name: String(it ?? "") };
+    });
+  })();
 
-  const benchSwitches =
-    legalSwitchesArr.find((s: any) => s?.position === primaryUserPos)?.switches ?? [];
+  const benchSwitches = (() => {
+    const s = legalSwitchesArr.find((s) => (s as { position?: string })?.position === primaryUserPos);
+    return Array.isArray((s as { switches?: unknown })?.switches) ? ((s as { switches?: unknown }).switches as unknown[]) : [];
+  })();
 
-  // Opponent moves are usually unknown; if you want to show them anyway:
-  const oppMoves =
-    legalMovesArr.find((m: any) => m?.position === primaryOppPos)?.moves ?? [];
+  const oppMoves = (() => {
+    const m = legalMovesArr.find((m) => (m as { position?: string })?.position === primaryOppPos);
+    const raw = Array.isArray((m as { moves?: unknown })?.moves) ? ((m as { moves?: unknown }).moves as unknown[]) : [];
+    return raw.map((it) => {
+      if (typeof it === "string") return { move_name: it };
+      if (it && typeof it === "object" && "move_name" in it && typeof (it as { move_name?: unknown }).move_name === "string")
+        return (it as { move_name: string });
+      return { move_name: String(it ?? "") };
+    });
+  })();
 
   return {
     id: dto.id,
@@ -153,10 +251,10 @@ function dtoToPracticeDetails(dto: PracticeDetailsDto): PracticeScenarioDetails 
         ability_name: null,
         moves: movesForPrimary,
       },
-      bench: benchSwitches.map((s: any) => ({
-        species_name: s.species_name,
-        hp_percent: null,
-      })),
+      bench: benchSwitches.map((s) => {
+        const o = s as { species_name?: string };
+        return { species_name: o.species_name ?? "Unknown", hp_percent: null };
+      }),
     },
 
     opponent_side: {
@@ -168,10 +266,10 @@ function dtoToPracticeDetails(dto: PracticeDetailsDto): PracticeScenarioDetails 
         ability_name: null,
         moves: oppMoves,
       },
-      bench: oppBenchArr.map((b: any) => ({
-        species_name: b.species_name,
-        hp_percent: b.hp_percent ?? null,
-      })),
+      bench: oppBenchArr.map((b) => {
+        const o = b as { species_name?: string; hp_percent?: number };
+        return { species_name: o.species_name ?? "Unknown", hp_percent: o.hp_percent ?? null };
+      }),
     },
 
     attempts: dto.attempts ?? [],

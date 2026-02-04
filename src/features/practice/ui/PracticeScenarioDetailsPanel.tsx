@@ -26,6 +26,19 @@ function cx(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
+function sourceLabel(src: PracticeScenarioDetails["source"]) {
+  switch (src) {
+    case "battle_review":
+      return "From Battle Review";
+    case "team_drill":
+      return "From Team";
+    case "curated":
+      return "Curated";
+    default:
+      return "Scenario";
+  }
+}
+
 export default function PracticeScenarioDetailsPanel({
   details,
   selectedAction,
@@ -42,7 +55,7 @@ export default function PracticeScenarioDetailsPanel({
     );
   }
 
-  const { title, description, user_side, opponent_side, attempts } = details;
+  const { title, description, user_side, opponent_side, attempts, source, turn_number } = details;
 
   const canRun = Boolean(selectedAction);
 
@@ -51,7 +64,11 @@ export default function PracticeScenarioDetailsPanel({
       {/* Header */}
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <h2 className="text-xl font-semibold">{title}</h2>
-        {description ? <p className="mt-1 text-sm text-slate-600">{description}</p> : null}
+        {description ? (
+          <p className="mt-1 text-sm text-slate-600">{description}</p>
+        ) : (
+          <p className="mt-1 text-sm text-slate-600">{sourceLabel(source)}{turn_number ? ` · Turn ${turn_number}` : ""}</p>
+        )}
       </div>
 
       {/* Sides */}
