@@ -14,8 +14,9 @@ export function useBattlesList() {
     try {
       const raw = await BattlesApi.list({ limit: 200, offset: 0 });
       setRows(raw);
-    } catch (e: any) {
-      setError(e?.message ?? "Failed to load battles");
+    } catch (e: unknown) {
+      if (e instanceof Error) setError(e.message);
+      else setError(String(e) || "Failed to load battles");
     } finally {
       setLoading(false);
     }

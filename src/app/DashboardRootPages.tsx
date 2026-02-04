@@ -14,6 +14,7 @@ import { SettingsPage } from "../pages/settings/SettingsPage";
 import { SettingsApi } from "../features/settings/api/settings.api";
 import { PracticeScenarioIntent } from "../pages/practice/PracticeScenariosPage";
 import PracticeScenariosPage from "../pages/practice/PracticeScenariosPage";
+import PokedexPage from "../pages/pokedex/PokedexPage";
 import { DashboardApi } from "../features/dashboard/api/dashboard.api";
 import type { DashboardKpis } from "../features/dashboard/model/dashboard.types";
 
@@ -169,7 +170,7 @@ export default function DashboardRootPage() {
         onConsumedIntent={() => setPracticeIntent(null)}
       />
     ),
-    pokedex: <div className="p-8">Pokedex (todo)</div>,
+    pokedex: <PokedexPage />,
     settings: <SettingsPage />,
   };
 
