@@ -474,6 +474,16 @@ export function registerDbHandlers() {
 
       return inserted;
     });
+      try { ipcMain.removeHandler("db:practice:delete"); } catch (_err) { /* ignore if not registered */ }
+      ipcMain.handle("db:practice:delete", (_e, id: string) => {
+        const db = getDb();
+        try {
+          db.prepare(`DELETE FROM practice_scenarios WHERE id = ?`).run(id);
+          return { ok: true };
+        } catch (err) {
+          return { ok: false, error: String(err) };
+        }
+      });
     // AI: EV training recipe handler
     try { ipcMain.removeHandler("ai:evs:recipe"); } catch (_err) { /* ignore if not registered */ }
     ipcMain.handle(

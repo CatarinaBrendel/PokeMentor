@@ -23,4 +23,6 @@ export const PracticeApi = {
       scenario_id: scenarioId,
       selected_action: selectedAction,
     }) as Promise<PracticeAttemptRow>,
+  deleteScenario: (id: string) =>
+    window.api.practice.deleteScenario(id) as Promise<{ ok: true } | { ok: false; error: string }>,
 };

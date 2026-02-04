@@ -177,6 +177,7 @@ declare global {
         ) => Promise<PracticeScenarioRow>;
         getScenario: (id: string) => Promise<PracticeScenarioRow | null>;
         getDetails: (id: string) => Promise<PracticeScenarioDetails>
+        deleteScenario: (id: string) => Promise<{ ok: true } | { ok: false; error: string }>;
         createAttempt: (
           args: {
             scenario_id: string;

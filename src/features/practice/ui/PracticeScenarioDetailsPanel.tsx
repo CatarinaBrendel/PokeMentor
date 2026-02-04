@@ -20,6 +20,7 @@ type PracticeScenarioDetailsPanelProps = {
   onRunOutcome: () => void;
 
   onClearSelection?: () => void;
+  onDelete?: (id: string) => void;
 };
 
 function cx(...xs: Array<string | false | null | undefined>) {
@@ -45,7 +46,8 @@ export default function PracticeScenarioDetailsPanel({
   onSelectMove,
   onRunOutcome,
   onClearSelection,
-  onSelectSwitch
+  onSelectSwitch,
+  onDelete,
 }: PracticeScenarioDetailsPanelProps) {
   if (!details) {
     return (
@@ -62,13 +64,31 @@ export default function PracticeScenarioDetailsPanel({
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-auto pr-1">
       {/* Header */}
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <h2 className="text-xl font-semibold">{title}</h2>
-        {description ? (
-          <p className="mt-1 text-sm text-slate-600">{description}</p>
-        ) : (
-          <p className="mt-1 text-sm text-slate-600">{sourceLabel(source)}{turn_number ? ` · Turn ${turn_number}` : ""}</p>
-        )}
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm flex items-start justify-between">
+        <div>
+          <h2 className="text-xl font-semibold">{title}</h2>
+          {description ? (
+            <p className="mt-1 text-sm text-slate-600">{description}</p>
+          ) : (
+            <p className="mt-1 text-sm text-slate-600">{sourceLabel(source)}{turn_number ? ` · Turn ${turn_number}` : ""}</p>
+          )}
+        </div>
+
+        {onDelete ? (
+          <div className="ml-4">
+            <button
+              type="button"
+              onClick={() => {
+                if (confirm(`Delete scenario "${title}"? This cannot be undone.`)) {
+                  onDelete(details.id);
+                }
+              }}
+              className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-rose-600 hover:bg-rose-50"
+            >
+              Delete
+            </button>
+          </div>
+        ) : null}
       </div>
 
       {/* Sides */}

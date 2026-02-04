@@ -484,6 +484,32 @@ export default function PracticeScenariosPage({
     setSelectedAction(null);
   }, []);
 
+  const handleDeleteScenario = useCallback(async (id: string) => {
+    try {
+      const resp = await PracticeApi.deleteScenario(id);
+      if (!resp) {
+        window.__toast?.("Failed to delete scenario", "error");
+        return;
+      }
+      if ("ok" in resp && resp.ok === false) {
+        const err = typeof resp.error === "string" ? resp.error : "Failed to delete scenario";
+        window.__toast?.(err, "error");
+        return;
+      }
+
+      // If the deleted scenario was selected, clear details
+      if (selectedId === id) {
+        setSelectedId(null);
+        setDetails(null);
+      }
+
+      await refreshMine();
+      window.__toast?.("Scenario deleted", "success");
+    } catch (e: unknown) {
+      window.__toast?.(e instanceof Error ? e.message : "Failed to delete scenario", "error");
+    }
+  }, [refreshMine, selectedId]);
+
   const handleSelectMove = useCallback((moveName: string) => {
     setSelectedAction((prev) => (prev?.kind === "move" && prev.moveName === moveName ? null : { kind: "move", moveName }));
   }, []);
@@ -572,6 +598,7 @@ export default function PracticeScenariosPage({
                 onSelectSwitch={handleSelectSwitch}
                 onRunOutcome={handleRunOutcome}
                 onClearSelection={handleClearSelection}
+                onDelete={handleDeleteScenario}
               />
             </div>
           </div>

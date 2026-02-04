@@ -105,7 +105,8 @@ contextBridge.exposeInMainWorld("api", {
       ipcRenderer.invoke("db:practice:getScenario", id) as Promise<PracticeScenarioRow | null>,
     
     getDetails: (id: string) => ipcRenderer.invoke("db:practice:getDetails", id),
-
+    deleteScenario: (id: string) => ipcRenderer.invoke("db:practice:delete", id),
+    
     async createAttempt(scenarioId: string, selectedAction: SelectedAction) {
       return ipcRenderer.invoke("db:practice:createAttempt", {
         scenario_id: scenarioId,

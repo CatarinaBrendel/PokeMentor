@@ -34,12 +34,12 @@ export default function PracticeScenarioListPanel({
         ) : (
           <ul className="space-y-2">
             {items.map((s) => (
-              <li key={s.id}>
+              <li key={s.id} className="flex items-start gap-2">
                 <button
                   type="button"
                   onClick={() => onSelect(s.id)}
                   className={cx(
-                    "w-full rounded-lg border px-3 py-3 text-left",
+                    "flex-1 rounded-lg border px-3 py-3 text-left text-left",
                     "transition-colors",
                     selectedId === s.id
                       ? "border-emerald-300 bg-emerald-50"
@@ -48,15 +48,9 @@ export default function PracticeScenarioListPanel({
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-slate-900">
-                        {s.title}
-                      </div>
+                      <div className="truncate text-sm font-semibold text-slate-900">{s.title}</div>
 
-                      {s.subtitle ? (
-                        <div className="mt-0.5 truncate text-xs text-slate-600">
-                          {s.subtitle}
-                        </div>
-                      ) : null}
+                      {s.subtitle ? <div className="mt-0.5 truncate text-xs text-slate-600">{s.subtitle}</div> : null}
 
                       <div className="mt-2 flex flex-wrap items-center gap-2">
                         <Pill>
@@ -78,12 +72,7 @@ export default function PracticeScenarioListPanel({
                     ) : null}
                   </div>
 
-                  {/* Optional team preview strip */}
-                  {/* Only render when you have team sprite data available */}
-                  {/* If you store it later, add `team_preview` to PracticeScenarioListItem */}
-                  {/* <div className="mt-3">
-                    <TeamSpriteStrip pokemon={...} />
-                  </div> */}
+                {/* delete moved to details panel */}
                 </button>
               </li>
             ))}

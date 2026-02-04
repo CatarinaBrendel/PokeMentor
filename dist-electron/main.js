@@ -2945,6 +2945,19 @@ function registerDbHandlers() {
       return inserted;
     });
     try {
+      ipcMain.removeHandler("db:practice:delete");
+    } catch (_err) {
+    }
+    ipcMain.handle("db:practice:delete", (_e, id) => {
+      const db2 = getDb();
+      try {
+        db2.prepare(`DELETE FROM practice_scenarios WHERE id = ?`).run(id);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: String(err) };
+      }
+    });
+    try {
       ipcMain.removeHandler("ai:evs:recipe");
     } catch (_err) {
     }
