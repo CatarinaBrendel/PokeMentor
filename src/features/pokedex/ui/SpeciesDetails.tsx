@@ -52,11 +52,29 @@
     return TYPE_COLORS[key] ?? '#777777';
   }
 
+  function normalizeTypeValue(v: unknown) {
+    if (typeof v === 'string') return v;
+    if (v && typeof v === 'object') {
+      const o = v as Record<string, unknown>;
+      return String(o.name ?? o.type ?? o['0'] ?? JSON.stringify(v));
+    }
+    return String(v ?? '');
+  }
+
   export default function SpeciesDetails({ speciesName }: Props) {
     const [loading, setLoading] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
     const [species, setSpecies] = React.useState<DexSpecies | null>(null);
     const [gen] = React.useState<number>(9);
+
+    type GenDex = { species?: { get?: (id: string) => unknown; [id: string]: unknown }; toID?: (s: string) => string };
+    type DexModule = {
+      toID?: (s: string) => string;
+      Dex?: { forGen?: (g: number) => GenDex; species?: { get?: (id: string) => unknown; [id: string]: unknown } };
+      species?: { get?: (id: string) => unknown; [id: string]: unknown };
+      Species?: { get?: (id: string) => unknown; [id: string]: unknown };
+      getSpecies?: (id: string) => unknown;
+    };
 
     React.useEffect(() => {
       let cancelled = false;
@@ -69,27 +87,30 @@
       (async () => {
         try {
           const mod = await import("@pkmn/dex");
-          const D = mod as unknown as Record<string, unknown>;
+          const D = mod as unknown as DexModule;
 
           // Prefer a generation-specific Dex if available
+          const dexCtor = D.Dex as DexModule['Dex'] | undefined;
           const dex = (() => {
             try {
-              if (D.Dex && typeof (D.Dex as any).forGen === "function") return (D.Dex as any).forGen(gen);
-            } catch {}
+              if (dexCtor && typeof dexCtor.forGen === 'function') return dexCtor.forGen(gen);
+            } catch (_e) {
+              // ignore
+            }
             // fall back to top-level Dex object (may expose .species)
-            return (D.Dex as any) || D;
+            return (D.Dex as unknown as GenDex) || (D as unknown as GenDex);
           })();
 
-          const toID = (D.toID as ((s: string) => string)) ?? ((s: string) => String(s).toLowerCase());
+          const toID = D.toID ?? ((s: string) => String(s).toLowerCase());
           const id = typeof toID === "function" ? toID(speciesName ?? "") : String(speciesName).toLowerCase();
 
           let sp: unknown = null;
           try {
-            if (dex && typeof (dex as any).species?.get === "function") sp = (dex as any).species.get(id) ?? (dex as any).species.get(speciesName);
-            if (!sp && dex && (dex as any).species && (dex as any).species[id]) sp = (dex as any).species[id];
+            if (dex && typeof dex.species?.get === "function") sp = dex.species.get!(id) ?? dex.species.get!(speciesName as string);
+            if (!sp && dex && dex.species && (dex as unknown as Record<string, unknown>)[id]) sp = (dex as unknown as Record<string, unknown>)[id];
             // attempt other shapes
-            if (!sp && D.Species && typeof (D.Species as any).get === "function") sp = (D.Species as any).get(id) ?? (D.Species as any).get(speciesName);
-            if (!sp && typeof (D as any).getSpecies === "function") sp = (D as any).getSpecies(id) ?? (D as any).getSpecies(speciesName);
+            if (!sp && D.Species && typeof D.Species.get === "function") sp = D.Species.get!(id) ?? D.Species.get!(speciesName as string);
+            if (!sp && typeof D.getSpecies === "function") sp = D.getSpecies!(id) ?? D.getSpecies!(speciesName as string);
           } catch {
             sp = null;
           }
@@ -100,7 +121,7 @@
           }
 
           const spObj = sp as Record<string, unknown>;
-          const baseStatsVal = spObj['baseStats'] ?? (typeof spObj['baseStats'] === 'function' ? (spObj['baseStats'] as Function)() : undefined);
+          const baseStatsVal = spObj['baseStats'] ?? (typeof spObj['baseStats'] === 'function' ? (spObj['baseStats'] as () => DexSpecies['baseStats'])() : undefined);
           const typesVal = spObj['types'] ?? spObj['type'] ?? (Array.isArray(spObj['t']) ? (spObj['t'] as string[]) : undefined);
           const abilitiesVal = spObj['abilities'] ?? spObj['ability'] ?? undefined;
           const genVal = spObj['gen'] ?? spObj['generation'] ?? undefined;
@@ -133,7 +154,7 @@
     const displayTypes = React.useMemo(() => {
       // Prefer normalized `species.types` from payload
       if (species?.types && Array.isArray(species.types)) {
-        return species.types.map((x) => String((x as any)?.name ?? (x as any)?.type ?? x));
+        return species.types.map((x) => normalizeTypeValue(x));
       }
 
       // Fallback to raw shapes in various possible Dex formats
@@ -153,17 +174,13 @@
 
         // Array of strings or objects
         if (Array.isArray(found)) {
-          return (found as unknown[]).map((el) => {
-            if (typeof el === 'string') return el;
-            if (el && typeof el === 'object') return String((el as any).name ?? (el as any).type ?? (el as any)['0'] ?? JSON.stringify(el));
-            return String(el);
-          });
+          return (found as unknown[]).map((el) => normalizeTypeValue(el));
         }
 
         // Numeric-keyed object like {0: 'Fire', 1: 'Flying'} or {slot1: 'Fire'}
         if (found && typeof found === 'object') {
           const vals = Object.values(found as Record<string, unknown>);
-          if (vals.length) return vals.map((v) => String((v as any)?.name ?? (v as any)?.type ?? v));
+          if (vals.length) return vals.map((v) => normalizeTypeValue(v));
         }
 
         // Slash-separated string e.g. "Fire/Flying"

@@ -1,7 +1,6 @@
 import React from "react";
 import { SPECIES_TO_DEX_ID } from "../../features/pokemon/speciesIndex";
-import SpeciesGrid from "../../features/pokedex/ui/SpeciesGrid";
-import SpeciesDetails from "../../features/pokedex/ui/SpeciesDetails";
+import { SpeciesGrid, SpeciesDetails } from "../../features/pokedex/ui";
 
 export default function PokedexPage() {
   const allSpecies = React.useMemo(() => Object.keys(SPECIES_TO_DEX_ID).sort(), []);
@@ -48,20 +47,29 @@ export default function PokedexPage() {
 
   // Build a species -> gen lookup map once (lazy, async). Keeps UI responsive.
   React.useEffect(() => {
+    type GenDex = { species?: { get?: (id: string) => unknown; [id: string]: unknown }; toID?: (s: string) => string };
+    type DexModule = {
+      toID?: (s: string) => string;
+      Dex?: { forGen?: (g: number) => GenDex; species?: { get?: (id: string) => unknown; [id: string]: unknown } };
+      species?: { get?: (id: string) => unknown; [id: string]: unknown };
+      Species?: { get?: (id: string) => unknown; [id: string]: unknown };
+      getSpecies?: (id: string) => unknown;
+    };
     let cancelled = false;
     async function buildMap() {
       setLoadingGenMap(true);
       try {
         const mod = await import("@pkmn/dex");
-        const D = mod as unknown as Record<string, unknown>;
+        const D = mod as unknown as DexModule;
         const map: Record<string, number> = {};
 
         // If Dex.forGen exists, build per-generation dex handles to lookup species reliably.
-        const dexForGen: Array<any | null> = [];
-        if (D.Dex && typeof (D.Dex as any).forGen === 'function') {
+        const dexForGen: Array<GenDex | null> = [];
+        const dexCtor = D.Dex as DexModule['Dex'] | undefined;
+        if (dexCtor && typeof dexCtor.forGen === 'function') {
           for (let g = 1; g <= 9; g++) {
             try {
-              dexForGen.push((D.Dex as any).forGen(g));
+              dexForGen.push(dexCtor.forGen!(g));
             } catch {
               dexForGen.push(null);
             }
@@ -71,7 +79,7 @@ export default function PokedexPage() {
         // Iterate known species list to avoid loading everything from the module
         for (const name of allSpecies) {
           try {
-            const id = typeof D.toID === 'function' ? (D.toID as any)(name) : String(name).toLowerCase();
+            const id = typeof D.toID === 'function' ? D.toID!(name) : String(name).toLowerCase();
 
             // Try per-gen dex lookups first to find earliest gen where species exists
             let foundGen: number | undefined = undefined;
@@ -80,7 +88,7 @@ export default function PokedexPage() {
                 const d = dexForGen[g - 1];
                 if (!d) continue;
                 try {
-                  const sp = typeof d.species?.get === 'function' ? d.species.get(id) ?? d.species.get(name) : d.species?.[id];
+                  const sp = typeof d.species?.get === 'function' ? d.species.get!(id) ?? d.species.get!(name) : d.species?.[id];
                   if (!sp) continue;
                   const spObj = sp as Record<string, unknown>;
                   // skip nonstandard entries (Past/Future/CAP etc.)
@@ -102,9 +110,9 @@ export default function PokedexPage() {
             // Fallback: try the module-level lookup and read explicit `gen`/`generation` property
             if (!foundGen) {
               let sp: unknown = null;
-              if (typeof (D as any).species?.get === 'function') sp = (D as any).species.get(id) ?? (D as any).species.get(name);
-              if (!sp && typeof (D as any).Species?.get === 'function') sp = (D as any).Species.get(id) ?? (D as any).Species.get(name);
-              if (!sp && typeof (D as any).getSpecies === 'function') sp = (D as any).getSpecies(id) ?? (D as any).getSpecies(name);
+              if (typeof D.species?.get === 'function') sp = D.species.get!(id) ?? D.species.get!(name);
+              if (!sp && typeof D.Species?.get === 'function') sp = D.Species.get!(id) ?? D.Species.get!(name);
+              if (!sp && typeof D.getSpecies === 'function') sp = D.getSpecies!(id) ?? D.getSpecies!(name);
 
               const spObj = sp as Record<string, unknown> | undefined;
               const g = spObj?.gen ?? spObj?.generation ?? undefined;
@@ -122,7 +130,9 @@ export default function PokedexPage() {
             // debug: log map size and example entry for troubleshooting generation filter
             // eslint-disable-next-line no-console
             console.log('[speciesGenMap] built, entries=', Object.keys(map).length, 'abomasnow->', map['abomasnow']);
-          } catch {}
+          } catch (_e) {
+            // ignore
+          }
         }
       } catch {
         if (!cancelled) setSpeciesGenMap(null);
