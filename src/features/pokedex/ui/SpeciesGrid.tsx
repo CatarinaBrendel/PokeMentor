@@ -21,7 +21,7 @@ export default function SpeciesGrid({ species, selected, onSelect, view = "grid"
             <button
               key={s}
               onClick={() => onSelect?.(s)}
-              className={`flex flex-col items-center gap-2 rounded-lg p-3 bg-white/3 hover:bg-white/5 transition text-center ${
+              className={`flex flex-col items-center gap-2 rounded-xl p-3 bg-white/5 border border-white/6 hover:bg-white/6 transition text-center ${
                 isSelected ? "ring-2 ring-offset-2 ring-white/30" : ""
               }`}
               title={s}

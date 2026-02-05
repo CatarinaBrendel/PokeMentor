@@ -156,7 +156,7 @@ export default function PokedexPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search Pokémon"
-            className="w-full bg-white/5 rounded-full px-4 py-3 text-sm placeholder:text-black/50 shadow-sm"
+            className="w-full bg-white/50 rounded-full px-4 py-3 text-sm placeholder:text-black/50 shadow-sm"
           />
         </div>
       </div>
@@ -164,21 +164,48 @@ export default function PokedexPage() {
       {/* Controls row */}
       <div className="mb-4 flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <select value={generation} onChange={(e) => setGeneration(e.target.value === "all" ? "all" : Number(e.target.value))} className="rounded-full bg-white/5 px-3 py-1 text-sm">
-            <option value="all">Generation: All</option>
-            {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((g) => (
-              <option key={g} value={g}>Gen {g}</option>
-            ))}
-          </select>
+          <div className="relative">
+            <select
+              value={generation}
+              onChange={(e) => setGeneration(e.target.value === "all" ? "all" : Number(e.target.value))}
+              className="appearance-none rounded-full bg-[#3F5A3F] text-[#F3F1E7] pl-3 pr-10 py-1 text-sm shadow-sm"
+            >
+              <option value="all">Generation: All</option>
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((g) => (
+                <option key={g} value={g}>Gen {g}</option>
+              ))}
+            </select>
+            <svg className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#F3F1E7]" viewBox="0 0 20 20" fill="none" stroke="currentColor">
+              <path d="M6 8l4 4 4-4" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
           {loadingGenMap ? <div className="ml-2 text-xs text-black/40">loading…</div> : null}
           <div className="hidden md:flex items-center gap-2 bg-white/5 rounded-full px-3 py-1 text-sm">
-            <button onClick={() => setView("grid")} className={`rounded p-1 ${view === "grid" ? "bg-white/10" : "bg-transparent"}`}>Grid</button>
-            <button onClick={() => setView("list")} className={`rounded p-1 ${view === "list" ? "bg-white/10" : "bg-transparent"}`}>List</button>
+            <button
+              onClick={() => setView("grid")}
+              aria-pressed={view === "grid"}
+              className={`rounded px-4 py-1 ${view === "grid" ? 'bg-[#3F5A3F] text-[#F3F1E7]' : 'bg-transparent'}`}
+              title="Grid view"
+            >
+              Grid
+            </button>
+            <button
+              onClick={() => setView("list")}
+              aria-pressed={view === "list"}
+              className={`rounded px-3 py-1 ${view === "list" ? 'bg-[#3F5A3F] text-[#F3F1E7]' : 'bg-transparent'}`}
+              title="List view"
+            >
+              List
+            </button>
           </div>
         </div>
 
         <div className="flex items-center gap-3">
-          <select value={order} onChange={(e) => setOrder(e.target.value as "a-z" | "z-a")} className="rounded-full bg-white/5 px-3 py-1 text-sm">
+          <select
+            value={order}
+            onChange={(e) => setOrder(e.target.value as "a-z" | "z-a")}
+            className="appearance-none rounded-full bg-[#3F5A3F] text-[#F3F1E7] px-3 py-1 text-sm shadow-sm"
+          >
             <option value="a-z">Order: A-Z</option>
             <option value="z-a">Order: Z-A</option>
           </select>
@@ -201,7 +228,11 @@ export default function PokedexPage() {
                   const pageNum = i + 1;
                   const isActive = pageNum === currentPage;
                   return (
-                    <button key={pageNum} onClick={() => setPage(pageNum)} className={`px-3 py-1 rounded ${isActive ? 'bg-green-500 text-white' : 'bg-transparent'}`}>
+                    <button
+                      key={pageNum}
+                      onClick={() => setPage(pageNum)}
+                      className={`px-3 py-1 rounded ${isActive ? 'bg-[#3F5A3F] text-[#F3F1E7]' : 'bg-transparent'}`}
+                    >
                       {pageNum}
                     </button>
                   );
